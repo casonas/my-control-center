@@ -16,22 +16,30 @@ export async function POST(req: Request) {
       return Response.json({ ok: false, error: "MCC_VPS_SSE_URL missing" }, { status: 500 });
     }
 
-    // Forward JSON body as-is (don't parse/restringify to avoid changes)
-    const bodyText = await req.text();
+    // Pass body through raw — zero parse overhead for Telegram-speed latency
+    const bodyBytes = await req.arrayBuffer();
 
-    // Build upstream request headers
+    // Build upstream request headers — agent context rides in headers
+    // so the VPS can route to the warm agent without parsing the body
     const upstreamHeaders = new Headers();
     upstreamHeaders.set("Accept", "text/event-stream");
     upstreamHeaders.set("Content-Type", req.headers.get("content-type") || "application/json");
-
-    // Optional: forward a request id for tracing
     upstreamHeaders.set("X-Request-Id", crypto.randomUUID());
 
-    // Call VPS
+    // Forward agent routing context as headers for instant dispatch
+    const agentId = req.headers.get("x-agent-id");
+    const sessionId = req.headers.get("x-agent-session");
+    const collaborators = req.headers.get("x-collab-agents");
+    if (agentId) upstreamHeaders.set("X-Agent-Id", agentId);
+    if (sessionId) upstreamHeaders.set("X-Agent-Session", sessionId);
+    if (collaborators) upstreamHeaders.set("X-Collab-Agents", collaborators);
+
+    // Call VPS with keep-alive for connection reuse
     const upstreamRes = await fetch(upstream, {
       method: "POST",
       headers: upstreamHeaders,
-      body: bodyText,
+      body: bodyBytes,
+      keepalive: true,
     });
 
     // If upstream fails, return useful info
@@ -59,13 +67,11 @@ export async function POST(req: Request) {
       return Response.json({ ok: false, error: "Upstream returned no body" }, { status: 502 });
     }
 
-    // Pass-through streaming response
+    // Stream response immediately — no buffering
     const headers = new Headers();
     headers.set("Content-Type", "text/event-stream; charset=utf-8");
     headers.set("Cache-Control", "no-cache, no-transform");
     headers.set("Connection", "keep-alive");
-
-    // Helps prevent proxy buffering (harmless on CF, helpful elsewhere)
     headers.set("X-Accel-Buffering", "no");
 
     return new Response(upstreamRes.body, { status: 200, headers });
