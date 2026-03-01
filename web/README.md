@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# My Control Center - Web Application
 
-## Getting Started
+This is the Next.js web application for My Control Center.
 
-First, run the development server:
+## 🚀 Quick Start
+
+**New here?** Follow the [GETTING_STARTED.md](GETTING_STARTED.md) guide for a step-by-step walkthrough!
+
+### Local Development
 
 ```bash
+# Install dependencies
+npm install
+
+# Copy environment variables
+cp .env.example .env.local
+
+# Edit .env.local and set your password
+# MCC_PASSWORD=your-password-here
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and login with your password.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 📁 Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+web/
+├── app/
+│   ├── api/          # API routes (auth, chat, agents, etc.)
+│   ├── page.tsx      # Main dashboard page
+│   └── layout.tsx    # App layout with auth
+├── components/       # React components
+├── lib/              # Utilities and helpers
+├── cloudflare/       # Cloudflare-specific configs
+│   ├── d1-schema.sql      # Database schema
+│   └── DEPLOY.md          # Deployment guide
+├── public/           # Static assets
+├── .env.example      # Environment variable template
+└── wrangler.toml     # Cloudflare configuration
+```
 
-## Learn More
+## 🔧 Available Scripts
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run dev       # Start development server
+npm run build     # Build for production
+npm start         # Start production server
+npm run lint      # Run ESLint
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 📚 Documentation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- [GETTING_STARTED.md](GETTING_STARTED.md) - Step-by-step setup guide
+- [cloudflare/DEPLOY.md](cloudflare/DEPLOY.md) - Detailed Cloudflare deployment
+- [../BLUEPRINT.md](../BLUEPRINT.md) - Full technical architecture
+- [../README.md](../README.md) - Project overview
 
-## Deploy on Vercel
+## 🤖 AI Agents
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The dashboard includes 7 AI agents:
+- 🏠 Home Assistant - Overall guidance
+- 🎓 Study Buddy - School assignments
+- 💼 Job Scout - Job search help
+- 🧠 Skill Coach - Learning paths
+- 🏀 Sports Analyst - Team updates
+- 📈 Market Watch - Stock tracking
+- 🔬 Research AI - Article curation
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See [GETTING_STARTED.md](GETTING_STARTED.md) for how to connect them to real AI.
+
+## 🚢 Deployment
+
+This app is designed to run on **Cloudflare Pages** (free tier):
+- Unlimited bandwidth
+- Free D1 database (SQLite)
+- Free Workers AI
+- Free KV storage
+- Free R2 file storage
+
+See [cloudflare/DEPLOY.md](cloudflare/DEPLOY.md) for detailed deployment instructions.
+
+## 🛠️ Technology Stack
+
+- **Framework**: Next.js 16 (React 19)
+- **Styling**: Tailwind CSS 4
+- **Deployment**: Cloudflare Pages
+- **Database**: Cloudflare D1 (SQLite)
+- **Storage**: Cloudflare KV + R2
+- **AI**: Cloudflare Workers AI (or bring your own)
+
+## 🔐 Security
+
+- Password-based authentication
+- httpOnly cookies for sessions
+- CSRF protection
+- No secrets in client code
+- All data encrypted at rest in D1
+
+## 📝 License
+
+MIT
