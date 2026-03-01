@@ -115,7 +115,7 @@ export async function POST(
         status: "queued",
       },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[agents/run] error", {
       requestId,
       name: err?.name,
