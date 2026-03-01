@@ -4,13 +4,15 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 type EnvLike = Record<string, unknown>;
 
+// D1: prepare() returns a statement that supports bind(), first(), run()
+type D1Stmt = {
+  bind: (...args: unknown[]) => D1Stmt;
+  first: <T = Record<string, unknown>>() => Promise<T | null>;
+  run: () => Promise<unknown>;
+};
+
 type D1Like = {
-  prepare: (sql: string) => {
-    bind: (...args: unknown[]) => {
-      first: <T = Record<string, unknown>>() => Promise<T | null>;
-      run: () => Promise<unknown>;
-    };
-  };
+  prepare: (sql: string) => D1Stmt;
 };
 
 function unauthorized() {
@@ -26,19 +28,19 @@ export async function POST(req: Request) {
   const { env } = getRequestContext();
   const e = env as EnvLike;
 
-  if (token !== e["MCC_RUNNER_TOKEN"]) {
-    return unauthorized();
+  const expected = e["MCC_RUNNER_TOKEN"];
+  if (typeof expected !== "string" || !expected) {
+    return Response.json({ ok: false, error: "MCC_RUNNER_TOKEN missing" }, { status: 500 });
   }
+  if (token !== expected) return unauthorized();
 
   const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) {
-    return Response.json({ ok: false, error: "DB missing" }, { status: 500 });
-  }
+  if (!DB) return Response.json({ ok: false, error: "DB missing" }, { status: 500 });
 
-  const body = await req.json().catch(() => ({}));
+  const body = (await req.json().catch(() => ({}))) as { runnerId?: string };
   const runnerId = body?.runnerId || "unknown-runner";
 
-  // Find queued run
+  // Find one queued run
   const run = await DB.prepare(
     `
     SELECT id, agent_id
@@ -53,7 +55,7 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, claimed: false });
   }
 
-  // Lock it
+  // Lock it (basic lock)
   await DB.prepare(
     `
     UPDATE agent_runs
@@ -70,9 +72,6 @@ export async function POST(req: Request) {
   return Response.json({
     ok: true,
     claimed: true,
-    run: {
-      id: run.id,
-      agentId: run.agent_id,
-    },
+    run: { id: run.id, agentId: run.agent_id },
   });
 }
