@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────
+# Cloudflare Deployment Configuration
+# ─────────────────────────────────────────────────────
+#
+# FREE TIER capabilities used:
+#
+#   Pages       — unlimited bandwidth, 500 builds/month
+#   Workers     — 100k requests/day (cron triggers for fetching jobs/news/scores)
+#   KV          — 100k reads/day, 1k writes/day, 1GB storage (API response cache)
+#   D1 (SQLite) — 5M row reads/day, 100k writes/day, 5GB (replace localStorage)
+#   R2          — 10GB storage (file uploads, exports)
+#   Workers AI  — free inference calls (embeddings for vector search)
+#   Tunnels     — free (reverse proxy to OpenClaw VPS)
+#   Access      — free for ≤50 users (zero-trust auth layer)
+#
+# Deployment:
+#   1. `npm run pages:build` → builds Next.js for Cloudflare Pages
+#   2. `npx wrangler pages deploy` → deploys to pages
+#   3. Cron workers run on schedule to fetch fresh data
+#
+# ─────────────────────────────────────────────────────
+
+name = "my-control-center"
+compatibility_date = "2025-01-01"
+
+# ─── D1 Database (cross-device persistent storage) ───
+[[d1_databases]]
+binding = "DB"
+database_name = "mcc-store"
+database_id = ""  # Set after `wrangler d1 create mcc-store`
+
+# ─── KV Namespace (API response cache) ───
+[[kv_namespaces]]
+binding = "CACHE"
+id = ""  # Set after `wrangler kv namespace create CACHE`
+
+# ─── R2 Bucket (file storage) ───
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "mcc-files"
+
+# ─── Workers AI (embeddings for vector search) ───
+[ai]
+binding = "AI"
+
+# ─── Cron Triggers (free-tier scheduled workers) ───
+# These workers fetch fresh data periodically
+[triggers]
+crons = [
+  "0 */4 * * *",   # Every 4 hours — fetch job postings
+  "0 */2 * * *",   # Every 2 hours — fetch news & research
+  "*/30 * * * *",  # Every 30 min — fetch sports scores (game days)
+  "*/15 * * * *",  # Every 15 min — fetch stock data (market hours)
+]
+
+# ─── Environment Variables ───
+[vars]
+NEXT_PUBLIC_API_BASE = "/api"
