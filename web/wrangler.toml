@@ -31,7 +31,7 @@ database_name = "mcc-store"
 database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"  # REQUIRED: paste output of `wrangler d1 create mcc-store`
 
 # ─── KV Namespace (API response cache) ───
-SETUP: Run `wrangler kv namespace create CACHE` and paste the id below
+# SETUP: Run `wrangler kv namespace create CACHE` and paste the id below
 [[kv_namespaces]]
 binding = "CACHE"
 id = "d5ece8caf7b74fa0883ae71f3af2f265"  # REQUIRED: paste output of `wrangler kv namespace create CACHE`
