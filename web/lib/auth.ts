@@ -1,47 +1,136 @@
-// web/lib/auth.ts — Server-side session management
-// MVP: in-memory store. Production: swap for D1 queries.
+// web/lib/auth.ts — Edge-safe session management (stateless signed cookie)
 
 import { cookies } from "next/headers";
-import crypto from "crypto";
 
 const SESSION_COOKIE = "mcc_session";
 const CSRF_COOKIE = "mcc_csrf";
 const SESSION_MAX_AGE = 180 * 24 * 60 * 60; // 180 days in seconds
 
-interface Session {
+interface SessionPayload {
+  userId: string;
+  csrfToken: string;
+  expiresAt: number; // epoch ms
+}
+
+export interface Session {
   userId: string;
   csrfToken: string;
   expiresAt: number;
 }
 
-// In-memory session store (replace with D1 in production)
-const sessions = new Map<string, Session>();
-
-function generateToken(): string {
-  return crypto.randomBytes(32).toString("hex");
-}
-
 function getPassword(): string {
+  // Cloudflare Pages env var
   return process.env.MCC_PASSWORD || "changeme";
 }
 
-export async function createSession(): Promise<{
-  sessionId: string;
-  csrfToken: string;
-}> {
-  const sessionId = generateToken();
-  const csrfToken = generateToken();
+function getSigningSecret(): string {
+  // Add this to Cloudflare env vars (recommended). If missing, fallback to MCC_PASSWORD.
+  // NOTE: Using MCC_PASSWORD as signing secret works, but a dedicated secret is better.
+  return process.env.MCC_COOKIE_SIGNING_SECRET || getPassword();
+}
+
+function base64urlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const b64 = btoa(binary);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64urlDecodeToBytes(input: string): Uint8Array {
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((input.length + 3) % 4);
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function jsonToB64url(obj: unknown): string {
+  const json = JSON.stringify(obj);
+  return base64urlEncode(new TextEncoder().encode(json));
+}
+
+function b64urlToJson<T>(b64url: string): T | null {
+  try {
+    const bytes = base64urlDecodeToBytes(b64url);
+    const json = new TextDecoder().decode(bytes);
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
+}
+
+function randomHex(byteLen: number): string {
+  const bytes = new Uint8Array(byteLen);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hmacSha256B64url(secret: string, data: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return base64urlEncode(new Uint8Array(sig));
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  // Compare strings in constant-ish time (length check + XOR loop)
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  const bytes = new Uint8Array(digest);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function signSession(payload: SessionPayload): Promise<string> {
+  // token = <payloadB64url>.<sigB64url>
+  const payloadB64 = jsonToB64url(payload);
+  const sig = await hmacSha256B64url(getSigningSecret(), payloadB64);
+  return `${payloadB64}.${sig}`;
+}
+
+async function verifySessionToken(token: string): Promise<SessionPayload | null> {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+
+  const [payloadB64, sig] = parts;
+  const expected = await hmacSha256B64url(getSigningSecret(), payloadB64);
+  if (!constantTimeEqual(sig, expected)) return null;
+
+  const payload = b64urlToJson<SessionPayload>(payloadB64);
+  if (!payload) return null;
+
+  if (typeof payload.expiresAt !== "number" || payload.expiresAt < Date.now()) return null;
+  if (typeof payload.userId !== "string" || typeof payload.csrfToken !== "string") return null;
+
+  return payload;
+}
+
+export async function createSession(): Promise<{ sessionId: string; csrfToken: string }> {
+  // sessionId is now the signed token (kept for API compatibility with your routes)
+  const csrfToken = randomHex(32);
   const expiresAt = Date.now() + SESSION_MAX_AGE * 1000;
 
-  sessions.set(sessionId, {
+  const payload: SessionPayload = {
     userId: "owner",
     csrfToken,
     expiresAt,
-  });
+  };
+
+  const token = await signSession(payload);
 
   const cookieStore = await cookies();
 
-  cookieStore.set(SESSION_COOKIE, sessionId, {
+  cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -50,46 +139,41 @@ export async function createSession(): Promise<{
   });
 
   cookieStore.set(CSRF_COOKIE, csrfToken, {
-    httpOnly: false, // JS needs to read this for headers
+    httpOnly: false, // JS can read this and send header if you want
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     maxAge: SESSION_MAX_AGE,
     path: "/",
   });
 
-  return { sessionId, csrfToken };
+  return { sessionId: token, csrfToken };
 }
 
 export async function getSession(): Promise<Session | null> {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-  if (!sessionId) return null;
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
+  if (!token) return null;
 
-  const session = sessions.get(sessionId);
-  if (!session) return null;
+  const payload = await verifySessionToken(token);
+  if (!payload) return null;
 
-  if (session.expiresAt < Date.now()) {
-    sessions.delete(sessionId);
-    return null;
-  }
-
-  return session;
+  return {
+    userId: payload.userId,
+    csrfToken: payload.csrfToken,
+    expiresAt: payload.expiresAt,
+  };
 }
 
 export async function destroySession(): Promise<void> {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-  if (sessionId) {
-    sessions.delete(sessionId);
-  }
   cookieStore.delete(SESSION_COOKIE);
   cookieStore.delete(CSRF_COOKIE);
 }
 
-export function verifyPassword(password: string): boolean {
+export async function verifyPassword(password: string): Promise<boolean> {
   const expected = getPassword();
-  // Hash both values so timingSafeEqual always compares equal-length buffers,
-  // avoiding a timing side-channel that leaks password length.
-  const hash = (v: string) => crypto.createHash("sha256").update(v).digest();
-  return crypto.timingSafeEqual(hash(password), hash(expected));
+
+  // Hash both, compare equal-length hex strings (constant-time loop)
+  const [a, b] = await Promise.all([sha256Hex(password), sha256Hex(expected)]);
+  return constantTimeEqual(a, b);
 }
