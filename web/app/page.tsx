@@ -54,8 +54,7 @@ export default function Home() {
   const activeAgent = useMemo(() => agents.find((a) => a.id === activeAgentId), [agents, activeAgentId]);
   const tabMeta = TABS.find((t) => t.key === activeTab)!;
 
-  /* ─── Auth + Bootstrap ─── */
-  async function refreshAuthAndBootstrap() {
+  /* ─── Auth + Bootstrap ─── */  async function refreshAuthAndBootstrap() {
     setError(null);
     try {
       const me = await authMe();
@@ -135,8 +134,7 @@ export default function Home() {
   }, [searchQuery]);
 
   /* ─── Notes helpers ─── */
-  const allNotes = getNotes();
-  void notesTick; // trigger re-read
+  const allNotes = useMemo(() => getNotes(), [notesTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const filteredNotes = (notesFilter === "all" ? allNotes : allNotes.filter((n) => n.tab === notesFilter))
     .filter((n) => !notesSearch || n.title.toLowerCase().includes(notesSearch.toLowerCase()) || n.content.toLowerCase().includes(notesSearch.toLowerCase()));
 
@@ -362,7 +360,7 @@ export default function Home() {
         {/* Messages */}
         <div className="flex-1 p-4 overflow-auto space-y-3">
           {messages.length === 0 && (
-            <div className="text-center py-8 animate-fade-in">
+            <div className="text-center py-8 animate-fade-in" role="status">
               <div className="text-3xl mb-3">{tabMeta.icon}</div>
               <div className="text-sm font-semibold text-white mb-1">{tabMeta.label} Agent</div>
               <div className="text-xs text-zinc-400 mb-4">{tabMeta.description}</div>

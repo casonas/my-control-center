@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { TabKey, Note, Assignment, Skill, JobPosting, ResearchArticle } from "@/lib/types";
 import { TABS } from "@/lib/types";
 import {
@@ -110,16 +110,13 @@ export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
   /* eslint-disable react-hooks/exhaustive-deps */
-  const assignments = getAssignments();
-  const skills = getSkills();
-  const jobs = getJobs();
-  const research = getResearch();
-  const watchlist = getWatchlist();
-  const notes = getNotes();
+  const assignments = useMemo(() => getAssignments(), [tick]);
+  const skills = useMemo(() => getSkills(), [tick]);
+  const jobs = useMemo(() => getJobs(), [tick]);
+  const research = useMemo(() => getResearch(), [tick]);
+  const watchlist = useMemo(() => getWatchlist(), [tick]);
+  const notes = useMemo(() => getNotes(), [tick]);
   /* eslint-enable react-hooks/exhaustive-deps */
-
-  // Void the tick to avoid unused-var lint warning
-  void tick;
 
   const tabMeta = TABS.find((t) => t.key === activeTab)!;
 
