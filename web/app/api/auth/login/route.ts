@@ -16,7 +16,6 @@ type D1Like = {
 function randomToken(bytes = 32) {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
-  // url-safe base64
   return btoa(String.fromCharCode(...arr))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
@@ -24,7 +23,6 @@ function randomToken(bytes = 32) {
 }
 
 function cookie(name: string, value: string, maxAgeSeconds: number) {
-  // cookie attributes for production
   return [
     `${name}=${encodeURIComponent(value)}`,
     `Path=/`,
@@ -40,27 +38,32 @@ export async function POST(req: Request) {
   const e = env as EnvLike;
 
   const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) return Response.json({ ok: false, error: "DB binding missing" }, { status: 500 });
+  if (!DB) {
+    return Response.json({ ok: false, error: "DB binding missing" }, { status: 500 });
+  }
 
   const passwordEnv = e["MCC_PASSWORD"];
   if (typeof passwordEnv !== "string" || !passwordEnv) {
     return Response.json({ ok: false, error: "MCC_PASSWORD missing" }, { status: 500 });
   }
 
-  const body = await req.json().catch(() => null) as { password?: string } | null;
+  const body = (await req.json().catch(() => null)) as { password?: string } | null;
   const password = body?.password ?? "";
+
   if (!password || password !== passwordEnv) {
     return Response.json({ ok: false, error: "Invalid credentials" }, { status: 401 });
   }
 
-  // For now, use the single admin user (adjust if you support multiple users)
-  const user = await DB.prepare(`SELECT id, username FROM users WHERE username = ? LIMIT 1`)
+  // Fetch admin user
+  const user = await DB.prepare(
+    `SELECT id, username FROM users WHERE username = ? LIMIT 1`
+  )
     .bind("admin")
     .first<{ id: string; username: string }>();
 
   if (!user) {
     return Response.json(
-      { ok: false, error: "No admin user found in D1 users table" },
+      { ok: false, error: "Admin user not found in D1 users table" },
       { status: 500 }
     );
   }
@@ -68,14 +71,14 @@ export async function POST(req: Request) {
   const sessionId = randomToken(32);
   const csrfToken = randomToken(32);
 
-  // 180 days
   const sessionDays = 180;
   const maxAge = sessionDays * 24 * 60 * 60;
 
-  // Insert session with SQL datetime expiry (TEXT)
   await DB.prepare(
-    `INSERT INTO sessions (id, user_id, csrf_token, expires_at)
-     VALUES (?, ?, ?, datetime('now', '+' || ? || ' days'))`
+    `
+    INSERT INTO sessions (id, user_id, csrf_token, expires_at)
+    VALUES (?, ?, ?, datetime('now', '+' || ? || ' days'))
+    `
   )
     .bind(sessionId, user.id, csrfToken, sessionDays)
     .run();
@@ -83,13 +86,13 @@ export async function POST(req: Request) {
   const headers = new Headers();
   headers.append("Set-Cookie", cookie("mcc_session", sessionId, maxAge));
 
-  return new Response(
-    JSON.stringify({
+  return Response.json(
+    {
       ok: true,
       authenticated: true,
       user: { id: user.id, username: user.username },
-      csrfToken
-    }),
+      csrfToken,
+    },
     { status: 200, headers }
   );
 }
