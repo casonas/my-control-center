@@ -1,0 +1,13 @@
+# dependencies/build output
+**/node_modules/
+**/.next/
+**/.turbo/
+
+# env
+**/.env.local
+**/.env
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
