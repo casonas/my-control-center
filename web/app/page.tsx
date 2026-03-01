@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
 import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
@@ -15,6 +15,7 @@ function cx(...c: (string | false | undefined | null)[]) {
 const glowMap: Record<string, string> = {
   home: "glow-cyan", school: "glow-violet", jobs: "glow-emerald",
   skills: "glow-amber", sports: "glow-rose", stocks: "glow-lime", research: "glow-indigo",
+  notes: "glow-teal", settings: "glow-zinc",
 };
 
 export default function Home() {
@@ -74,7 +75,7 @@ export default function Home() {
   useEffect(() => { refreshAuthAndBootstrap(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function newConversation(agentId: string) {
-    const data = await apiPost("/conversations", { agentId, title: `${agentId} chat` });
+    const data = await apiPost<{ conversationId: string }>("/conversations", { agentId, title: `${agentId} chat` });
     setConversationId(data.conversationId);
     setMessages([]);
   }
@@ -82,7 +83,7 @@ export default function Home() {
   useEffect(() => {
     if (!authed || !agents.length) return;
     newConversation(activeAgentId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [activeAgentId, authed, agents.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeAgentId, authed, agents.length]);
 
   async function send() {
     if (!conversationId || !text.trim() || busy) return;
@@ -336,6 +337,14 @@ export default function Home() {
       research: [
         { text: "Latest cyber news", prompt: "What are the most important cybersecurity news stories from today?" },
         { text: "Deep dive topic", prompt: "Give me a deep dive lesson on a cutting-edge cybersecurity topic." },
+      ],
+      notes: [
+        { text: "Organize my notes", prompt: "Help me organize and categorize my notes across all workspaces." },
+        { text: "Summarize recent notes", prompt: "Give me a summary of my most recent notes and key takeaways." },
+      ],
+      settings: [
+        { text: "System status", prompt: "Show me the current status of all my connectors and integrations." },
+        { text: "Optimize my setup", prompt: "Suggest improvements for my My Control Center configuration." },
       ],
     };
 

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { getSession } from "@/lib/auth";
 
 export async function GET() {
-  return NextResponse.json({ authed: true });
+  const session = await getSession();
+  return NextResponse.json({ authed: !!session });
 }

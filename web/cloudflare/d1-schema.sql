@@ -128,3 +128,116 @@ CREATE TABLE IF NOT EXISTS api_cache (
   value      TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+
+-- ─── Extended Schema: Auth, Events, AI Engine ──────
+-- These tables support the "Think Like Me" engine,
+-- agent orchestration, and enhanced security.
+-- ───────────────────────────────────────────────────
+
+-- ─── Users ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id         TEXT PRIMARY KEY,
+  username   TEXT NOT NULL UNIQUE,
+  pw_hash    TEXT NOT NULL,           -- bcrypt/argon2 hash
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ─── Sessions ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,        -- secure random token
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf_token TEXT NOT NULL,           -- per-session CSRF token
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- ─── User Events ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_events (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,           -- 'click','complete','dismiss','search','view','chat'
+  target_id  TEXT,                    -- doc/task/note id that was acted on
+  target_type TEXT,                   -- 'assignment','note','job','skill','research'
+  metadata   TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_events_user ON user_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_events_type ON user_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_created ON user_events(created_at);
+
+-- ─── Next Actions ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS next_actions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title        TEXT NOT NULL,
+  reasoning    TEXT NOT NULL DEFAULT '',  -- why this was suggested
+  source_type  TEXT NOT NULL DEFAULT '',  -- 'deadline','pattern','skill_gap','agent','rss'
+  source_id    TEXT,                      -- optional link to source item
+  confidence   REAL NOT NULL DEFAULT 0.5, -- 0.0-1.0 confidence score
+  priority     INTEGER NOT NULL DEFAULT 3, -- 1=urgent 5=low
+  status       TEXT NOT NULL DEFAULT 'pending', -- 'pending','accepted','dismissed','completed'
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  acted_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_actions_user ON next_actions(user_id);
+CREATE INDEX IF NOT EXISTS idx_actions_status ON next_actions(status);
+
+-- ─── Agent Runs ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_id     TEXT NOT NULL,           -- 'home-agent','school-agent', etc.
+  prompt       TEXT NOT NULL DEFAULT '',
+  response     TEXT NOT NULL DEFAULT '',
+  artifacts    TEXT NOT NULL DEFAULT '[]', -- JSON array of {type, url, title}
+  tokens_used  INTEGER NOT NULL DEFAULT 0,
+  duration_ms  INTEGER NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT 'completed', -- 'running','completed','failed'
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_runs_user ON agent_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_runs_agent ON agent_runs(agent_id);
+
+-- ─── Notifications ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS notifications (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL DEFAULT '',
+  channel      TEXT NOT NULL DEFAULT 'in_app', -- 'in_app','push','email'
+  priority     TEXT NOT NULL DEFAULT 'normal',  -- 'low','normal','high','urgent'
+  read         INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  read_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(read);
+
+-- ─── Connectors ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS connectors (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type         TEXT NOT NULL,           -- 'rss','email_imap','calendar_ics','webhook','api'
+  name         TEXT NOT NULL,
+  config       TEXT NOT NULL DEFAULT '{}', -- encrypted JSON config
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  last_sync_at TEXT,
+  sync_errors  INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_connectors_user ON connectors(user_id);
+
+-- ─── Feedback ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS feedback (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_type  TEXT NOT NULL,           -- 'next_action','notification','agent_run'
+  target_id    TEXT NOT NULL,
+  action       TEXT NOT NULL,           -- 'helpful','not_helpful','dismiss','complete'
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_target ON feedback(target_type, target_id);

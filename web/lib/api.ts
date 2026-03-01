@@ -33,12 +33,12 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   return res;
 }
 
-export async function apiGet<T = any>(path: string): Promise<T> {
+export async function apiGet<T = unknown>(path: string): Promise<T> {
   const res = await apiFetch(path, { method: "GET" });
   return res.json();
 }
 
-export async function apiPost<T = any>(path: string, body: any): Promise<T> {
+export async function apiPost<T = unknown>(path: string, body: Record<string, unknown>): Promise<T> {
   const res = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -62,9 +62,9 @@ export async function logout() {
 
 // ---- SSE streaming ----
 export async function streamChat(
-  body: any,
+  body: Record<string, unknown>,
   onDelta: (t: string) => void,
-  onEvent?: (event: string, data: any) => void
+  onEvent?: (event: string, data: unknown) => void
 ) {
   const res = await apiFetch("/chat/stream", {
     method: "POST",
@@ -96,14 +96,22 @@ export async function streamChat(
       const dataLine = lines.find((l) => l.startsWith("data:"))?.slice(5).trim();
       if (!dataLine) continue;
 
-      let data: any = dataLine;
+      let data: unknown = dataLine;
       try {
         data = JSON.parse(dataLine);
-      } catch {}
+      } catch { /* not JSON, keep as string */ }
 
       onEvent?.(event, data);
 
-      if (event === "delta" && data?.text) onDelta(data.text);
+      if (
+        event === "delta" &&
+        typeof data === "object" &&
+        data !== null &&
+        "text" in data &&
+        typeof (data as { text: unknown }).text === "string"
+      ) {
+        onDelta((data as { text: string }).text);
+      }
     }
   }
 }

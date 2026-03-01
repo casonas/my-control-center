@@ -7,7 +7,9 @@ export type TabKey =
   | "skills"
   | "sports"
   | "stocks"
-  | "research";
+  | "research"
+  | "notes"
+  | "settings";
 
 export interface TabMeta {
   key: TabKey;
@@ -74,6 +76,22 @@ export const TABS: TabMeta[] = [
     color: "indigo",
     gradient: "from-indigo-500 to-blue-500",
     description: "News, tech & deep dives",
+  },
+  {
+    key: "notes",
+    label: "Notes",
+    icon: "📝",
+    color: "teal",
+    gradient: "from-teal-500 to-cyan-500",
+    description: "All your notes in one place",
+  },
+  {
+    key: "settings",
+    label: "Settings",
+    icon: "⚙️",
+    color: "zinc",
+    gradient: "from-zinc-500 to-gray-500",
+    description: "Preferences & connectors",
   },
 ];
 
@@ -156,4 +174,36 @@ export interface PomodoroState {
   running: boolean;
   seconds: number;
   mode: "work" | "break";
+}
+
+// "Think Like Me" engine types
+
+export interface NextAction {
+  id: string;
+  title: string;
+  reasoning: string;
+  sourceType: "deadline" | "skill_gap" | "unread" | "job_apply" | "pattern";
+  sourceId: string | null;
+  confidence: number;
+  priority: number;
+  tab: string;
+}
+
+export interface Notification {
+  id: string;
+  title: string;
+  body: string;
+  channel: "in_app" | "push" | "email";
+  priority: "low" | "normal" | "high" | "urgent";
+  read: boolean;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface Connector {
+  id: string;
+  type: "rss" | "email_imap" | "calendar_ics" | "webhook" | "api";
+  name: string;
+  enabled: boolean;
+  lastSyncAt: string | null;
 }
