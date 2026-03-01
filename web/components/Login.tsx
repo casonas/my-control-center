@@ -1,9 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { login } from "../lib/api";
 
 export default function Login({ onSuccess }: { onSuccess: () => void }) {
+  const router = useRouter();
+
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -12,9 +15,18 @@ export default function Login({ onSuccess }: { onSuccess: () => void }) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
     try {
       await login(password);
+
+      // Critical: re-render anything that depends on cookies/session (App Router)
+      router.refresh();
+
+      // Let parent flip UI/state (your existing pattern)
       onSuccess();
+
+      // Optional: if you want to land on a route after login, uncomment:
+      // router.push("/");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Login failed";
       setError(msg);
