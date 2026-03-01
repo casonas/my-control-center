@@ -39,7 +39,7 @@ id = "d5ece8caf7b74fa0883ae71f3af2f265"  # REQUIRED: paste output of `wrangler k
 
 # ─── R2 Bucket (file storage) ───
 [[r2_buckets]]
-binding = "STORAGE"
+binding = "FILES"
 bucket_name = "mcc-files"
 
 # ─── Workers AI (embeddings for vector search) ───
