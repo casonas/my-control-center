@@ -28,13 +28,13 @@ compatibility_date = "2025-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mcc-store"
-database_id = ""  # REQUIRED: paste output of `wrangler d1 create mcc-store`
+database_id = "REPLACE_AFTER_D1_CREATE"  # REQUIRED: paste output of `wrangler d1 create mcc-store`
 
 # ─── KV Namespace (API response cache) ───
 # SETUP: Run `wrangler kv namespace create CACHE` and paste the id below
 [[kv_namespaces]]
 binding = "CACHE"
-id = ""  # REQUIRED: paste output of `wrangler kv namespace create CACHE`
+id = "REPLACE_AFTER_KV_CREATE"  # REQUIRED: paste output of `wrangler kv namespace create CACHE`
 
 # ─── R2 Bucket (file storage) ───
 [[r2_buckets]]
