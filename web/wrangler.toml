@@ -36,6 +36,7 @@ database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"  # REQUIRED: paste output o
 binding = "CACHE"
 id = "d5ece8caf7b74fa0883ae71f3af2f265"  # REQUIRED: paste output of `wrangler kv namespace create CACHE`
 
+
 # ─── R2 Bucket (file storage) ───
 [[r2_buckets]]
 binding = "STORAGE"
