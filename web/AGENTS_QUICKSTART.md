@@ -206,9 +206,10 @@ class Handler(BaseHTTPRequestHandler):
             # Stream response word by word
             response = f"[{agent_id}] I received your message: {message}"
             for word in response.split():
-                self.wfile.write(f"event: delta\\ndata: {json.dumps({'text': word + ' '})}\\n\\n".encode())
+                chunk = json.dumps({"text": word + " "})
+                self.wfile.write(f"event: delta\ndata: {chunk}\n\n".encode())
                 self.wfile.flush()
-            self.wfile.write(b"event: done\\ndata: {}\\n\\n")
+            self.wfile.write(b"event: done\ndata: {}\n\n")
             self.wfile.flush()
             return
 
@@ -460,4 +461,42 @@ sudo journalctl -u cloudflared -f
 curl -X POST https://api.yourdomain.com/agents/connect \
   -H "Content-Type: application/json" \
   -d '{"agentId":"main","sessionId":"test"}'
+```
+
+---
+
+## D1 Database Schema
+
+If you deploy to Cloudflare Pages with D1, run these SQL statements to
+create the required tables.  Use the Cloudflare dashboard (D1 → Console)
+or `wrangler d1 execute`:
+
+```sql
+-- Agent runs (used by chat, scan, and the runner system)
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  prompt        TEXT DEFAULT '',
+  response      TEXT DEFAULT '',
+  artifacts     TEXT DEFAULT '[]',
+  tokens_used   INTEGER DEFAULT 0,
+  duration_ms   INTEGER DEFAULT 0,
+  status        TEXT DEFAULT 'queued',  -- queued | running | completed | failed
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+-- Knowledge items (populated by /api/agents/ingest)
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id            TEXT PRIMARY KEY,
+  agent_id      TEXT NOT NULL,
+  type          TEXT DEFAULT 'note',   -- article | job | stock | note | research
+  title         TEXT DEFAULT '',
+  content       TEXT DEFAULT '',
+  source        TEXT DEFAULT '',
+  url           TEXT DEFAULT '',
+  tags          TEXT DEFAULT '[]',     -- JSON array
+  meta          TEXT DEFAULT '{}',     -- JSON object
+  created_at    TEXT DEFAULT (datetime('now'))
+);
 ```

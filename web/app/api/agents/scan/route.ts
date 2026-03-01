@@ -85,13 +85,13 @@ export async function POST(req: Request) {
       const DB = e["DB"] as unknown as D1Like | undefined;
       if (DB) {
         const runId = `scan_${crypto.randomUUID().slice(0, 12)}`;
-        const prompt = JSON.stringify({ type: "web_scan", query, scope });
+        const taskPayload = JSON.stringify({ type: "web_scan", query, scope });
 
         await DB.prepare(
           `INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
            VALUES (?, ?, ?, ?, 'queued', datetime('now'))`
         )
-          .bind(runId, session.user_id, body.agentId, prompt)
+          .bind(runId, session.user_id, body.agentId, taskPayload)
           .run();
 
         return Response.json({ ok: true, runId, status: "queued" });
