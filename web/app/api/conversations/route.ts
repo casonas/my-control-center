@@ -1,9 +1,17 @@
+// web/app/api/conversations/route.ts
 export const runtime = "edge";
 
-import { NextResponse } from "next/server";
+import { withMutatingAuth } from "@/lib/mutatingAuth";
 
-export async function POST() {
-  return NextResponse.json({
-    conversationId: "mock-conv-" + Date.now().toString(36),
+export async function POST(req: Request) {
+  return withMutatingAuth(req, async () => {
+    // At this point:
+    // - valid session cookie exists
+    // - Origin is allowed
+    // - X-CSRF matches sessions.csrf_token
+
+    return Response.json({
+      conversationId: "mock-conv-" + Date.now().toString(36),
+    });
   });
 }
