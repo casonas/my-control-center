@@ -1,3 +1,5 @@
+export const runtime = "edge";
+
 export async function POST() {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
