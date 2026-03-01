@@ -1,25 +1,7 @@
-import { getRequestContext } from "@cloudflare/next-on-pages";
+// web/app/api/auth/logout/route.ts
+import { withMutatingAuth } from "@/lib/mutatingAuth";
 
 export const runtime = "edge";
-
-type EnvLike = Record<string, unknown>;
-
-type D1Like = {
-  prepare: (sql: string) => {
-    bind: (...args: unknown[]) => {
-      run: () => Promise<unknown>;
-    };
-  };
-};
-
-function getCookie(req: Request, name: string): string | null {
-  const cookie = req.headers.get("cookie") || "";
-  for (const part of cookie.split(";")) {
-    const [k, ...v] = part.trim().split("=");
-    if (k === name) return decodeURIComponent(v.join("=") || "");
-  }
-  return null;
-}
 
 function clearCookie(name: string) {
   return `${name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
@@ -30,22 +12,21 @@ function clearCookieNonHttpOnly(name: string) {
 }
 
 export async function POST(req: Request) {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+  return withMutatingAuth(req, async ({ env, session }) => {
+    // Session is guaranteed valid here (cookie + origin + X-CSRF matched)
+    await env.DB.prepare("DELETE FROM sessions WHERE id = ?1")
+      .bind(session.id)
+      .run();
 
-  const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) return Response.json({ ok: false, error: "DB binding missing" }, { status: 500 });
+    const headers = new Headers();
+    headers.append("Set-Cookie", clearCookie("mcc_session"));
 
-  const sessionId = getCookie(req, "mcc_session");
+    // If you also set a non-HttpOnly CSRF cookie in your app, clear it too:
+    headers.append("Set-Cookie", clearCookieNonHttpOnly("mcc_csrf"));
 
-  if (sessionId) {
-    await DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
-  }
-
-  const headers = new Headers();
-  headers.append("Set-Cookie", clearCookie("mcc_session"));
-  // If you use a separate CSRF cookie like your screenshot shows:
-  headers.append("Set-Cookie", clearCookieNonHttpOnly("mcc_csrf"));
-
-  return new Response(JSON.stringify({ ok: true, loggedOut: true }), { status: 200, headers });
+    return new Response(JSON.stringify({ ok: true, loggedOut: true }), {
+      status: 200,
+      headers,
+    });
+  });
 }
