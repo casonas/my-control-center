@@ -149,41 +149,81 @@ Then just run `npm run dev` and you're ready to go!
 
 ### Option C: Self-Host with Your Own AI (Advanced - ~30 minutes)
 
+**📖 For very detailed, specific instructions, see:** [CONNECTING_VPS_AGENTS.md](CONNECTING_VPS_AGENTS.md)
+
+**Quick checklist:**
+
 - [ ] **Have a VPS** with your AI service running (e.g., OpenClaw, Ollama, etc.)
-- [ ] **On your VPS**, install Cloudflare Tunnel:
+  - [ ] Note the port it's running on (e.g., 8080)
+  - [ ] Verify it works: `curl http://localhost:8080/health`
+
+- [ ] **On your VPS** (via SSH), install Cloudflare Tunnel:
   ```bash
-  curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-  sudo dpkg -i cloudflared.deb
+  wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  sudo dpkg -i cloudflared-linux-amd64.deb
   ```
+
+- [ ] **Authenticate with Cloudflare:**
+  ```bash
+  cloudflared tunnel login
+  ```
+
 - [ ] **Create tunnel:**
   ```bash
-  cloudflared tunnel create mcc-tunnel
+  cloudflared tunnel create mcc-agents
   ```
+  - [ ] Note the Tunnel ID from output
+
 - [ ] **Route your subdomain:**
   ```bash
-  cloudflared tunnel route dns mcc-tunnel api.yourdomain.com
+  cloudflared tunnel route dns mcc-agents api.yourdomain.com
   ```
+
 - [ ] **Create config** at `~/.cloudflared/config.yml`:
   ```yaml
   tunnel: <TUNNEL_ID_FROM_ABOVE>
-  credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+  credentials-file: /home/your-username/.cloudflared/<TUNNEL_ID>.json
   ingress:
     - hostname: api.yourdomain.com
       service: http://localhost:8080  # Your AI service port
+      originRequest:
+        noTLSVerify: true
+        connectTimeout: 30s
     - service: http_status:404
   ```
-- [ ] **Run the tunnel:**
+
+- [ ] **Test the tunnel:**
   ```bash
-  cloudflared tunnel run mcc-tunnel
+  cloudflared tunnel run mcc-agents
   ```
-  💡 Tip: Use `screen` or `systemd` to keep it running
+  - [ ] In another terminal: `curl https://api.yourdomain.com/health`
+  - [ ] Should get response from your AI service
+
+- [ ] **Install as service** (so it survives reboots):
+  ```bash
+  sudo cloudflared service install
+  sudo systemctl start cloudflared
+  sudo systemctl enable cloudflared
+  ```
+
 - [ ] **Update Cloudflare Pages environment variable:**
   ```
   NEXT_PUBLIC_API_BASE=https://api.yourdomain.com
   ```
-- [ ] **Update chat route** to forward requests to your AI service
+
+- [ ] **Update chat route** in `app/api/chat/stream/route.ts` to proxy to your VPS
+  - [ ] See [CONNECTING_VPS_AGENTS.md](CONNECTING_VPS_AGENTS.md) for the exact code
+
 - [ ] **Redeploy** your app
+
+- [ ] **Test from dashboard** - send a message to an agent
+
 - [ ] ✨ **Your agents now use your self-hosted AI!**
+
+**⚠️ If something doesn't work:**
+- See the troubleshooting section in [CONNECTING_VPS_AGENTS.md](CONNECTING_VPS_AGENTS.md)
+- Check tunnel logs: `sudo journalctl -u cloudflared -f`
+- Verify OpenClaw is running: `ps aux | grep openclaw`
 
 ## ✅ Phase 4: Customize (Optional)
 

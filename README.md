@@ -149,42 +149,64 @@ By default, agents return demo responses. To connect real AI:
 
 ### Option 2: Self-Host with OpenClaw (Advanced)
 
-If you have a VPS running OpenClaw or similar:
+**📖 Complete step-by-step guide:** [web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md)
+
+If you have a VPS running OpenClaw or similar AI agents:
+
+**Quick overview:**
 
 1. **On your VPS**, install Cloudflare Tunnel:
    ```bash
-   # Install cloudflared
-   curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-   sudo dpkg -i cloudflared.deb
+   # SSH into your VPS first
+   wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+   sudo dpkg -i cloudflared-linux-amd64.deb
    
-   # Create tunnel
-   cloudflared tunnel create mcc-tunnel
+   # Authenticate with Cloudflare
+   cloudflared tunnel login
    
-   # Route your subdomain
-   cloudflared tunnel route dns mcc-tunnel api.yourdomain.com
+   # Create a tunnel
+   cloudflared tunnel create mcc-agents
+   
+   # Route your subdomain to the tunnel
+   cloudflared tunnel route dns mcc-agents api.yourdomain.com
    ```
 
 2. **Create tunnel config** at `~/.cloudflared/config.yml`:
    ```yaml
    tunnel: <TUNNEL_ID>
-   credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+   credentials-file: /home/your-username/.cloudflared/<TUNNEL_ID>.json
    ingress:
      - hostname: api.yourdomain.com
-       service: http://localhost:8080  # Your AI service port
+       service: http://localhost:8080  # Your OpenClaw port
      - service: http_status:404
    ```
 
-3. **Run the tunnel**:
+3. **Run the tunnel as a service**:
    ```bash
-   cloudflared tunnel run mcc-tunnel
+   # Test first
+   cloudflared tunnel run mcc-agents
+   
+   # Install as service so it survives reboots
+   sudo cloudflared service install
+   sudo systemctl start cloudflared
+   sudo systemctl enable cloudflared
    ```
 
-4. **Update environment variable** in Cloudflare Pages:
+4. **Update dashboard** in Cloudflare Pages environment variables:
    ```
    NEXT_PUBLIC_API_BASE=https://api.yourdomain.com
    ```
 
-Your agents will now connect to your self-hosted AI backend!
+5. **Update code** in `web/app/api/chat/stream/route.ts` to proxy to your VPS
+
+**⚠️ Important:** The detailed guide includes:
+- Specific commands for your exact setup
+- How to test each step
+- Troubleshooting common issues
+- How to check OpenClaw is running correctly
+- API format requirements
+
+**👉 See the full guide:** [web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md)
 
 ### Option 3: Use Cloudflare Workers AI (Free Tier)
 
