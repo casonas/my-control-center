@@ -4,6 +4,7 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 type EnvLike = Record<string, unknown>;
 
+// D1 minimal types
 type D1Stmt = {
   bind: (...args: unknown[]) => D1Stmt;
   first: <T = Record<string, unknown>>() => Promise<T | null>;
@@ -18,16 +19,31 @@ function json(status: number, body: Record<string, unknown>) {
   return Response.json(body, { status });
 }
 
-function unauthorized() {
-  return json(401, { ok: false, error: "Unauthorized" });
+function unauthorized(requestId: string) {
+  return json(401, { ok: false, requestId, error: "Unauthorized" });
+}
+
+function errorDetails(err: unknown): { name?: string; message: string; stack?: string } {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  if (typeof err === "string") {
+    return { message: err };
+  }
+  try {
+    return { message: JSON.stringify(err) };
+  } catch {
+    return { message: "Unknown error" };
+  }
 }
 
 export async function POST(req: Request) {
   const requestId = crypto.randomUUID();
 
   try {
+    // --- Auth: Bearer token ---
     const auth = req.headers.get("authorization") || "";
-    if (!auth.startsWith("Bearer ")) return unauthorized();
+    if (!auth.startsWith("Bearer ")) return unauthorized(requestId);
 
     const token = auth.slice(7);
 
@@ -38,15 +54,21 @@ export async function POST(req: Request) {
     if (typeof expected !== "string" || !expected) {
       return json(500, { ok: false, requestId, error: "MCC_RUNNER_TOKEN missing" });
     }
-    if (token !== expected) return unauthorized();
+    if (token !== expected) return unauthorized(requestId);
 
     const DB = e["DB"] as unknown as D1Like | undefined;
     if (!DB) return json(500, { ok: false, requestId, error: "DB missing" });
 
-    const body = (await req.json().catch(() => ({}))) as { runnerId?: string };
-    const runnerId = body?.runnerId || "unknown-runner";
+    // Optional body (runnerId is informational only; not stored without schema change)
+    let runnerId = "unknown-runner";
+    try {
+      const body = (await req.json()) as { runnerId?: string };
+      if (body?.runnerId && typeof body.runnerId === "string") runnerId = body.runnerId;
+    } catch {
+      // body is optional; ignore invalid/missing JSON
+    }
 
-    // 1) Find one queued run (matches your actual schema)
+    // 1) Find one queued run (your actual schema has prompt/user_id)
     const run = await DB.prepare(
       `
       SELECT id, agent_id, user_id, prompt, created_at
@@ -67,7 +89,7 @@ export async function POST(req: Request) {
       return json(200, { ok: true, requestId, claimed: false });
     }
 
-    // 2) Mark it running (only touching columns that exist)
+    // 2) Attempt to claim it by flipping status (only columns that exist)
     await DB.prepare(
       `
       UPDATE agent_runs
@@ -78,18 +100,20 @@ export async function POST(req: Request) {
       .bind(run.id)
       .run();
 
-    // 3) Verify it is running (helps detect a race)
+    // 3) Verify claim (helps detect a race with multiple runners)
     const check = await DB.prepare(
       `
-      SELECT id, status
+      SELECT status
       FROM agent_runs
       WHERE id = ?
       LIMIT 1
       `
-    ).bind(run.id).first<{ id: string; status: string }>();
+    )
+      .bind(run.id)
+      .first<{ status: string }>();
 
     if (!check || check.status !== "running") {
-      // Another runner may have raced and claimed it first
+      // Another runner may have claimed it first
       return json(200, { ok: true, requestId, claimed: false, raced: true });
     }
 
@@ -103,23 +127,22 @@ export async function POST(req: Request) {
         userId: run.user_id,
         prompt: run.prompt,
         createdAt: run.created_at,
-        claimedBy: runnerId, // informational only; not stored in DB with current schema
+        claimedBy: runnerId, // informational only
       },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const details = errorDetails(err);
+
     console.error("[runner/claim] error", {
       requestId,
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
+      ...details,
     });
 
     return json(500, {
       ok: false,
       requestId,
       error: "Internal error",
-      name: err?.name,
-      message: err?.message,
+      ...details,
     });
   }
 }
