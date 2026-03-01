@@ -123,6 +123,8 @@ export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
     case "sports": return <SportsWidgets refresh={refresh} />;
     case "stocks": return <StocksWidgets refresh={refresh} />;
     case "research": return <ResearchWidgets research={research} refresh={refresh} />;
+    case "notes": return <NotesWidgets notes={notes} refresh={refresh} />;
+    case "settings": return <SettingsWidgets />;
     default: return null;
   }
 }
@@ -923,6 +925,149 @@ function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; r
           <span className="text-xs font-semibold text-white">{research.length > 0 ? Math.round((readCount / research.length) * 100) : 0}%</span>
         </div>
         <ProgressBar value={research.length > 0 ? (readCount / research.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
+      </Card>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   NOTES — All notes in one place
+   ═══════════════════════════════════════════════════════ */
+function NotesWidgets({ notes, refresh }: { notes: Note[]; refresh: () => void }) {
+  const [filter, setFilter] = useState<string>("all");
+  const [newTitle, setNewTitle] = useState("");
+  const [newContent, setNewContent] = useState("");
+
+  const filtered = filter === "all" ? notes : notes.filter((n) => n.tab === filter);
+
+  return (
+    <div className="space-y-3">
+      {/* Filter */}
+      <div className="flex gap-1 overflow-auto pb-1">
+        {["all", "home", "school", "jobs", "skills", "research"].map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
+            filter === f ? "bg-teal-500/20 text-teal-400 border-teal-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f}</button>
+        ))}
+      </div>
+
+      {/* Quick add */}
+      <Card title="New Note" icon="✏️">
+        <div className="space-y-2">
+          <input
+            className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-teal-500/50 transition"
+            placeholder="Title…"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+          />
+          <textarea
+            className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-teal-500/50 transition resize-none"
+            rows={3}
+            placeholder="Content…"
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+          />
+          <button
+            onClick={() => {
+              if (newTitle.trim()) {
+                saveNote({ tab: "home", title: newTitle.trim(), content: newContent });
+                setNewTitle("");
+                setNewContent("");
+                refresh();
+              }
+            }}
+            className="px-4 py-1.5 rounded-lg bg-teal-500/20 text-teal-400 text-xs font-medium hover:bg-teal-500/30 transition"
+          >Save Note</button>
+        </div>
+      </Card>
+
+      {/* Notes list */}
+      <Card title={`Notes (${filtered.length})`} icon="📝">
+        {filtered.length === 0 ? <EmptyState icon="📝" text="No notes yet." /> : (
+          <div className="space-y-2">
+            {filtered.map((n) => (
+              <div key={n.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white">{n.title}</span>
+                  <div className="flex items-center gap-2">
+                    <Badge color="teal">{n.tab}</Badge>
+                    <button
+                      onClick={() => { deleteNote(n.id); refresh(); }}
+                      className="text-[10px] text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"
+                    >✕</button>
+                  </div>
+                </div>
+                {n.content && <div className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{n.content}</div>}
+                <div className="text-[10px] text-zinc-600 mt-1">{new Date(n.updatedAt).toLocaleDateString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   SETTINGS — Preferences & connectors
+   ═══════════════════════════════════════════════════════ */
+function SettingsWidgets() {
+  return (
+    <div className="space-y-3">
+      <Card title="Account" icon="👤">
+        <div className="space-y-2 text-xs text-zinc-300">
+          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>Session</span>
+            <Badge color="emerald">Active (180-day)</Badge>
+          </div>
+          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>CSRF Protection</span>
+            <Badge color="emerald">Enabled</Badge>
+          </div>
+          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>Storage</span>
+            <Badge color="cyan">localStorage (MVP)</Badge>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Data Connectors" icon="🔗">
+        <div className="space-y-2">
+          {[
+            { name: "RSS Feeds", type: "rss", status: "Ready" },
+            { name: "Email (IMAP)", type: "email", status: "Not configured" },
+            { name: "Calendar (ICS)", type: "calendar", status: "Not configured" },
+            { name: "OpenClaw VPS", type: "api", status: "Pending tunnel" },
+          ].map((c) => (
+            <div key={c.name} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5">
+              <span className="text-xs text-white">{c.name}</span>
+              <Badge color={c.status === "Ready" ? "emerald" : "zinc"}>{c.status}</Badge>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 text-[10px] text-zinc-500">Configure connectors in your environment variables or Cloudflare D1.</div>
+      </Card>
+
+      <Card title="Notifications" icon="🔔">
+        <div className="space-y-2 text-xs text-zinc-300">
+          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>In-app notifications</span>
+            <Badge color="emerald">On</Badge>
+          </div>
+          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>Push notifications</span>
+            <Badge color="zinc">Requires HTTPS</Badge>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="About" icon="ℹ️">
+        <div className="text-xs text-zinc-400 space-y-1">
+          <div><strong className="text-zinc-300">My Control Center</strong> v0.1.0</div>
+          <div>Next.js 16 · Tailwind 4 · Cloudflare Pages</div>
+          <div>Open-source personal dashboard</div>
+        </div>
       </Card>
     </div>
   );

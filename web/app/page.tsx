@@ -15,6 +15,7 @@ function cx(...c: (string | false | undefined | null)[]) {
 const glowMap: Record<string, string> = {
   home: "glow-cyan", school: "glow-violet", jobs: "glow-emerald",
   skills: "glow-amber", sports: "glow-rose", stocks: "glow-lime", research: "glow-indigo",
+  notes: "glow-teal", settings: "glow-zinc",
 };
 
 export default function Home() {
@@ -336,6 +337,14 @@ export default function Home() {
       research: [
         { text: "Latest cyber news", prompt: "What are the most important cybersecurity news stories from today?" },
         { text: "Deep dive topic", prompt: "Give me a deep dive lesson on a cutting-edge cybersecurity topic." },
+      ],
+      notes: [
+        { text: "Organize my notes", prompt: "Help me organize and categorize my notes across all workspaces." },
+        { text: "Summarize recent notes", prompt: "Give me a summary of my most recent notes and key takeaways." },
+      ],
+      settings: [
+        { text: "System status", prompt: "Show me the current status of all my connectors and integrations." },
+        { text: "Optimize my setup", prompt: "Suggest improvements for my My Control Center configuration." },
       ],
     };
 
