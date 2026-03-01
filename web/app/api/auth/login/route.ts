@@ -9,26 +9,16 @@ export async function POST(request: Request) {
     const { password } = body;
 
     if (!password || typeof password !== "string") {
-      return NextResponse.json(
-        { error: "Password is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Password is required" }, { status: 400 });
     }
 
-    if (!verifyPassword(password)) {
-      return NextResponse.json(
-        { error: "Invalid password" },
-        { status: 401 }
-      );
+    if (!(await verifyPassword(password))) {
+      return NextResponse.json({ error: "Invalid password" }, { status: 401 });
     }
 
     const { csrfToken } = await createSession();
-
     return NextResponse.json({ ok: true, csrfToken });
   } catch {
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
