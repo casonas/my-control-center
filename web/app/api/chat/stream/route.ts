@@ -13,72 +13,61 @@ export async function POST(req: Request) {
 
     const upstream = e["MCC_VPS_SSE_URL"];
     if (typeof upstream !== "string" || !upstream) {
-      return Response.json({ error: "MCC_VPS_SSE_URL missing" }, { status: 500 });
+      return Response.json({ ok: false, error: "MCC_VPS_SSE_URL missing" }, { status: 500 });
     }
 
-    // Forward request body as-is (JSON)
+    // Forward JSON body as-is (don't parse/restringify to avoid changes)
     const bodyText = await req.text();
 
-    // Forward selected headers
-    // NOTE: Do NOT forward Cookie from Pages to VPS unless you explicitly want that.
-    // Your VPS should auth via your Pages cookie/session logic, not the VPS.
+    // Build upstream request headers
     const upstreamHeaders = new Headers();
-    upstreamHeaders.set("Content-Type", req.headers.get("content-type") || "application/json");
     upstreamHeaders.set("Accept", "text/event-stream");
+    upstreamHeaders.set("Content-Type", req.headers.get("content-type") || "application/json");
 
-    // Optional: trace headers for debugging
-    const rid = crypto.randomUUID();
-    upstreamHeaders.set("X-Request-Id", rid);
+    // Optional: forward a request id for tracing
+    upstreamHeaders.set("X-Request-Id", crypto.randomUUID());
 
-    // If you want the VPS to know which user/session is calling, pass a stable identifier.
-    // Example: user id from your session guard could be sent via header if desired.
-    // upstreamHeaders.set("X-MCC-User", session.user_id);
-
+    // Call VPS
     const upstreamRes = await fetch(upstream, {
       method: "POST",
       headers: upstreamHeaders,
       body: bodyText,
-      // Important: streaming works fine without special flags on Workers runtime
     });
 
-    // If upstream fails, return its error payload (best effort)
+    // If upstream fails, return useful info
     if (!upstreamRes.ok) {
       const ct = upstreamRes.headers.get("content-type") || "";
       const text = await upstreamRes.text().catch(() => "");
       if (ct.includes("application/json")) {
         try {
           const j = JSON.parse(text);
-          return Response.json({ error: "Upstream error", upstreamStatus: upstreamRes.status, upstream: j }, { status: 502 });
+          return Response.json(
+            { ok: false, error: "Upstream error", upstreamStatus: upstreamRes.status, upstream: j },
+            { status: 502 }
+          );
         } catch {
           // fall through
         }
       }
       return Response.json(
-        { error: "Upstream error", upstreamStatus: upstreamRes.status, upstreamText: text || `HTTP ${upstreamRes.status}` },
+        { ok: false, error: "Upstream error", upstreamStatus: upstreamRes.status, upstreamText: text || `HTTP ${upstreamRes.status}` },
         { status: 502 }
       );
     }
 
-    // Must have a body to stream
     if (!upstreamRes.body) {
-      return Response.json({ error: "Upstream returned no body" }, { status: 502 });
+      return Response.json({ ok: false, error: "Upstream returned no body" }, { status: 502 });
     }
 
     // Pass-through streaming response
     const headers = new Headers();
-
-    // SSE headers
     headers.set("Content-Type", "text/event-stream; charset=utf-8");
     headers.set("Cache-Control", "no-cache, no-transform");
     headers.set("Connection", "keep-alive");
 
-    // Helps avoid buffering by some proxies (mostly relevant outside CF, but harmless)
+    // Helps prevent proxy buffering (harmless on CF, helpful elsewhere)
     headers.set("X-Accel-Buffering", "no");
 
-    // CORS is same-origin for Pages app; if you ever call cross-origin, you’d need to set this carefully.
-    // We rely on browser same-origin. Do not set "*" with credentials.
-
-    // Return the upstream stream directly
     return new Response(upstreamRes.body, { status: 200, headers });
   });
 }
