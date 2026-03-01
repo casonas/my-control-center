@@ -607,7 +607,7 @@ function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => vo
 /* ═══════════════════════════════════════════════════════
    SPORTS — ESPN style
    ═══════════════════════════════════════════════════════ */
-function SportsWidgets({ refresh: _refresh }: { refresh: () => void }) {
+function SportsWidgets(_: { refresh: () => void }) {
   const [league, setLeague] = useState("NBA");
   const leagues = ["NBA", "NFL", "MLB", "NHL", "Soccer"];
 
@@ -699,7 +699,7 @@ function SportsWidgets({ refresh: _refresh }: { refresh: () => void }) {
 /* ═══════════════════════════════════════════════════════
    STOCKS — Yahoo Finance style
    ═══════════════════════════════════════════════════════ */
-function StocksWidgets({ refresh: _refresh }: { refresh: () => void }) {
+function StocksWidgets(_: { refresh: () => void }) {
   const watchlist = getWatchlist("stock");
 
   // Simulated data (agent would provide real data)
