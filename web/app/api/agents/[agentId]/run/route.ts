@@ -23,11 +23,10 @@ function getCookie(req: Request, name: string): string | null {
   return null;
 }
 
-function bad(status: number, error: string) {
-  return Response.json({ ok: false, error }, { status });
+function json(status: number, body: Record<string, unknown>) {
+  return Response.json(body, { status });
 }
 
-// Minimal auth: require valid session (same as /auth/me)
 async function requireSession(req: Request, DB: D1Like) {
   const sessionId = getCookie(req, "mcc_session");
   if (!sessionId) return null;
@@ -40,7 +39,9 @@ async function requireSession(req: Request, DB: D1Like) {
       AND s.expires_at > datetime('now')
     LIMIT 1
     `
-  ).bind(sessionId).first<{ session_id: string; user_id: string }>();
+  )
+    .bind(sessionId)
+    .first<{ session_id: string; user_id: string }>();
 
   return row ? { sessionId: row.session_id, userId: row.user_id } : null;
 }
@@ -48,43 +49,86 @@ async function requireSession(req: Request, DB: D1Like) {
 function randomId(bytes = 16) {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-export async function POST(req: Request, ctx: { params: Promise<{ agentId: string }> }) {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+function toPrompt(payload: unknown): string {
+  if (payload === undefined || payload === null) return "";
+  if (typeof payload === "string") return payload;
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    // fallback if payload has circular refs
+    return String(payload);
+  }
+}
 
-  const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) return bad(500, "DB missing");
+export async function POST(
+  req: Request,
+  ctx: { params: Promise<{ agentId: string }> }
+) {
+  const requestId = crypto.randomUUID();
 
-  const sess = await requireSession(req, DB);
-  if (!sess) return bad(401, "Unauthorized");
+  try {
+    const { env } = getRequestContext();
+    const e = env as EnvLike;
 
-  const { agentId } = await ctx.params;
+    const DB = e["DB"] as unknown as D1Like | undefined;
+    if (!DB) return json(500, { ok: false, requestId, error: "DB missing" });
 
-  const body = (await req.json().catch(() => ({}))) as {
-    payload?: unknown;
-    trigger?: string;
-  };
+    const sess = await requireSession(req, DB);
+    if (!sess) return json(401, { ok: false, requestId, error: "Unauthorized" });
 
-  const runId = `run_${randomId(12)}`;
-  const payloadJson = body.payload === undefined ? null : JSON.stringify(body.payload);
-  const trigger = body.trigger || "manual";
+    const { agentId } = await ctx.params;
+    if (!agentId) return json(400, { ok: false, requestId, error: "Missing agentId" });
 
-  // Queue the run
-  await DB.prepare(
-    `
-    INSERT INTO agent_runs (id, agent_id, status, payload, trigger, created_at, updated_at)
-    VALUES (?, ?, 'queued', ?, ?, datetime('now'), datetime('now'))
-    `
-  )
-    .bind(runId, agentId, payloadJson, trigger)
-    .run();
+    const body = (await req.json().catch(() => ({}))) as {
+      payload?: unknown;
+      trigger?: string; // accepted but not stored in current schema
+    };
 
-  return Response.json({
-    ok: true,
-    queued: true,
-    run: { id: runId, agentId, status: "queued" },
-  });
+    const runId = `run_${randomId(12)}`;
+    const prompt = toPrompt(body.payload);
+
+    // Insert using CURRENT schema for agent_runs:
+    // (id, user_id, agent_id, prompt, response, artifacts, tokens_used, duration_ms, status, created_at)
+    // Many have defaults, but user_id/agent_id are NOT NULL so we bind those.
+    await DB.prepare(
+      `
+      INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
+      VALUES (?, ?, ?, ?, 'queued', datetime('now'))
+      `
+    )
+      .bind(runId, sess.userId, agentId, prompt)
+      .run();
+
+    return json(200, {
+      ok: true,
+      requestId,
+      queued: true,
+      run: {
+        id: runId,
+        agentId,
+        userId: sess.userId,
+        status: "queued",
+      },
+    });
+  } catch (err: any) {
+    console.error("[agents/run] error", {
+      requestId,
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack,
+    });
+
+    return json(500, {
+      ok: false,
+      requestId,
+      error: "Internal error",
+      name: err?.name,
+      message: err?.message,
+    });
+  }
 }
