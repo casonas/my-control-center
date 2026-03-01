@@ -15,7 +15,23 @@ My Control Center (MCC) is your personal command center. It gives you:
 
 ## Quick Start (Local Development)
 
-### Prerequisites
+### Automated Setup (Easiest)
+
+```bash
+cd my-control-center/web
+./quickstart.sh
+```
+
+The script will:
+- Check Node.js version
+- Install dependencies
+- Create `.env.local` from template
+- Build the app to verify everything works
+- Show you the next steps
+
+### Manual Setup
+
+#### Prerequisites
 - Node.js 18+ installed
 - npm or yarn package manager
 
@@ -222,6 +238,43 @@ Edit `web/app/globals.css` for styling. The app uses Tailwind CSS.
 - Ensure build settings point to `web` directory
 - Check that Node version is 18+ in Pages settings
 - Look at build logs in Cloudflare Dashboard
+
+## FAQ
+
+### Do I need to pay for anything?
+No! Everything runs on Cloudflare's free tier. You only need to pay if you:
+- Use OpenAI API (OpenAI charges per token)
+- Exceed free tier limits (very unlikely for personal use)
+- Want a custom domain (domains cost $10-15/year)
+
+### Is my data private?
+Yes! Your data is stored in your own Cloudflare D1 database. No one else can access it. The password you set protects your dashboard.
+
+### Can I use this without a VPS?
+Absolutely! You can use:
+- OpenAI API (easiest, but costs a few cents per conversation)
+- Cloudflare Workers AI (completely free, but less powerful)
+- Or just run it locally without AI (still useful as a dashboard)
+
+### What if I don't have a domain?
+Cloudflare gives you a free `*.pages.dev` subdomain when you deploy. You can use that instead of buying a custom domain.
+
+### Can multiple people use this?
+The current version is designed for single-user. To add multi-user support, you'd need to:
+- Modify the auth system to support multiple accounts
+- Add user isolation in the database
+- This is possible but requires code changes
+
+### How do I backup my data?
+Your data is in Cloudflare D1. To backup:
+```bash
+wrangler d1 export mcc-store --output=backup.sql
+```
+
+To restore:
+```bash
+wrangler d1 execute mcc-store --file=backup.sql
+```
 
 ## Architecture
 

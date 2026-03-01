@@ -2,6 +2,28 @@
 
 Follow this checklist to get My Control Center running on your domain with AI agents.
 
+## 🏃 Super Quick Start (Automated)
+
+If you want the fastest setup, use the automated script:
+
+```bash
+cd my-control-center/web
+./quickstart.sh
+```
+
+This script will:
+- ✅ Check Node.js version
+- ✅ Install dependencies
+- ✅ Create `.env.local` file
+- ✅ Build the app to verify it works
+- ✅ Show you the next steps
+
+Then just run `npm run dev` and you're ready to go!
+
+**Or follow the detailed checklist below for manual setup:**
+
+---
+
 ## ✅ Phase 1: Local Setup (5 minutes)
 
 - [ ] **Install Node.js 18+** - Download from [nodejs.org](https://nodejs.org)
