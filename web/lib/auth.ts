@@ -88,10 +88,8 @@ export async function destroySession(): Promise<void> {
 
 export function verifyPassword(password: string): boolean {
   const expected = getPassword();
-  // Constant-time comparison to prevent timing attacks
-  if (password.length !== expected.length) return false;
-  return crypto.timingSafeEqual(
-    Buffer.from(password),
-    Buffer.from(expected)
-  );
+  // Hash both values so timingSafeEqual always compares equal-length buffers,
+  // avoiding a timing side-channel that leaks password length.
+  const hash = (v: string) => crypto.createHash("sha256").update(v).digest();
+  return crypto.timingSafeEqual(hash(password), hash(expected));
 }
