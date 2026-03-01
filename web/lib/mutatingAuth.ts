@@ -2,13 +2,23 @@
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 type Env = {
-  DB: D1Database;
+  DB: D1Like;
   /**
    * Optional: comma-separated origins
    * Example:
    * MCC_ALLOWED_ORIGINS="https://my-control-center.pages.dev,https://dashboard.my-control-center.com,http://localhost:3000"
    */
   MCC_ALLOWED_ORIGINS?: string;
+};
+
+// Minimal shape of Cloudflare D1 used by this helper (no global D1Database type needed)
+type D1Like = {
+  prepare: (sql: string) => {
+    bind: (...args: unknown[]) => {
+      first: <T = unknown>() => Promise<T | null>;
+      run: () => Promise<unknown>;
+    };
+  };
 };
 
 export type SessionRow = {
@@ -78,7 +88,6 @@ function buildAllowedOrigins(env: Env, req: Request): Set<string> {
 }
 
 function requireOriginAllowed(req: Request, env: Env) {
-  // Mutating endpoints: require Origin header (don’t accept null/absent)
   const origin = req.headers.get("origin");
   if (!origin) throw new HttpError(403, "Missing Origin header");
 
@@ -106,7 +115,6 @@ async function requireSession(req: Request, env: Env): Promise<SessionRow> {
 
   if (!row) throw new HttpError(401, "Invalid session");
 
-  // Expiration check (expects ISO timestamps)
   const exp = new Date(row.expires_at).getTime();
   if (Number.isFinite(exp) && exp <= Date.now()) {
     throw new HttpError(401, "Session expired");
@@ -123,14 +131,25 @@ function requireCsrf(req: Request, session: SessionRow) {
 
 /**
  * Enforces: Origin allowlist + session cookie + X-CSRF match.
- * Use only on POST/PUT/PATCH/DELETE.
+ * Use only on POST/PUT/PATCH/DELETE routes.
  */
 export async function requireMutatingAuth(req: Request) {
-  const { env } = getRequestContext<Env>();
-  requireOriginAllowed(req, env);
-  const session = await requireSession(req, env);
+  const { env } = getRequestContext();
+  const e = env as Record<string, unknown>;
+
+  const DB = e["DB"] as unknown as D1Like | undefined;
+  if (!DB) throw new HttpError(500, "DB binding missing");
+
+  const allowed = e["MCC_ALLOWED_ORIGINS"];
+  const MCC_ALLOWED_ORIGINS = typeof allowed === "string" ? allowed : undefined;
+
+  const typedEnv: Env = { DB, MCC_ALLOWED_ORIGINS };
+
+  requireOriginAllowed(req, typedEnv);
+  const session = await requireSession(req, typedEnv);
   requireCsrf(req, session);
-  return { env, session };
+
+  return { env: typedEnv, session };
 }
 
 /**
