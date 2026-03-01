@@ -162,7 +162,7 @@ export async function withMutatingAuth(
   try {
     const ctx = await requireMutatingAuth(req);
     return await handler(ctx);
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (e instanceof HttpError) return jsonError(e.status, e.message);
     console.error("withMutatingAuth unexpected error:", e);
     return jsonError(500, "Internal error");
