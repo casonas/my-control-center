@@ -99,11 +99,20 @@ export interface Agent {
   id: string;
   name: string;
   emoji: string;
+  model?: string;
+  workspace?: string;
+  agentDir?: string;
+  parentId?: string | null;
+  description?: string;
+  capabilities?: string[];
+  status?: "online" | "offline" | "busy";
 }
 
 export interface Msg {
   role: "user" | "agent";
   content: string;
+  agentId?: string;
+  agentName?: string;
 }
 
 // Local storage data models

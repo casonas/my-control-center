@@ -182,12 +182,20 @@ export async function logout() {
 export async function streamChat(
   body: Record<string, unknown>,
   onDelta: (t: string) => void,
-  onEvent?: (event: string, data: unknown) => void
+  onEvent?: (event: string, data: unknown) => void,
+  agentHeaders?: { agentId?: string; sessionId?: string; collaborators?: string[] }
 ) {
-  // If /chat/stream is mutating and protected, apiFetch will add X-CSRF automatically.
+  // Build extra headers for agent routing (avoids body-parsing on server)
+  const extraHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (agentHeaders?.agentId) extraHeaders["X-Agent-Id"] = agentHeaders.agentId;
+  if (agentHeaders?.sessionId) extraHeaders["X-Agent-Session"] = agentHeaders.sessionId;
+  if (agentHeaders?.collaborators?.length) {
+    extraHeaders["X-Collab-Agents"] = agentHeaders.collaborators.join(",");
+  }
+
   const res = await apiFetch("/chat/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: extraHeaders,
     body: JSON.stringify(body),
   });
 

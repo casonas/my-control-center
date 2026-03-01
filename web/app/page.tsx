@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
 import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
 import { TABS, type TabKey, type Agent, type Msg, type Note } from "@/lib/types";
 import { getNotes, saveNote, deleteNote, searchAll } from "@/lib/store";
 import type { Doc } from "@/lib/store";
+import { getAllAgents, addAgent as addAgentToRegistry } from "@/lib/agents";
+import {
+  connectAll,
+  disconnectAll,
+  onSessionChange,
+  getSession,
+  type AgentSession,
+} from "@/lib/agentSession";
 
 function cx(...c: (string | false | undefined | null)[]) {
   return c.filter(Boolean).join(" ");
@@ -34,6 +42,11 @@ export default function Home() {
   /* ─── Agents ─── */
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string>("main");
+  const [agentSessions, setAgentSessions] = useState<Record<string, AgentSession>>({});
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [collabMode, setCollabMode] = useState(false);
+  const [collabAgentIds, setCollabAgentIds] = useState<Set<string>>(new Set());
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
 
   /* ─── Chat ─── */
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -54,25 +67,49 @@ export default function Home() {
 
   const activeAgent = useMemo(() => agents.find((a) => a.id === activeAgentId), [agents, activeAgentId]);
   const tabMeta = TABS.find((t) => t.key === activeTab)!;
+  const agentTree = useMemo(() => {
+    const all = agents;
+    const roots = all.filter((a) => !a.parentId);
+    return roots.map((root) => ({
+      ...root,
+      children: all.filter((a) => a.parentId === root.id),
+    }));
+  }, [agents]);
 
-  /* ─── Auth + Bootstrap ─── */  async function refreshAuthAndBootstrap() {
+  /* ─── Session status listener ─── */
+  useEffect(() => {
+    const unsub = onSessionChange(setAgentSessions);
+    return () => { unsub(); };
+  }, []);
+
+  /* ─── Auth + Bootstrap ─── */
+  const refreshAuthAndBootstrap = useCallback(async () => {
     setError(null);
     try {
       const me = await authMe();
       setAuthed(me.authed);
-      if (!me.authed) { setAgents([]); setConversationId(null); setMessages([]); return; }
+      if (!me.authed) { setAgents([]); setConversationId(null); setMessages([]); disconnectAll(); return; }
+
+      // Merge API agents with client-side custom agents
       const data = await apiGet<{ agents: Agent[] }>("/agents");
-      const list = data.agents || [];
+      const apiAgents = data.agents || [];
+      const custom = getAllAgents().filter(
+        (ca) => !apiAgents.some((a) => a.id === ca.id)
+      );
+      const list = [...apiAgents, ...custom];
       setAgents(list);
       const nextId = list.find((a) => a.id === activeAgentId)?.id ? activeAgentId : list[0]?.id || "main";
       setActiveAgentId(nextId);
+
+      // Warm up all agents immediately — no cold starts
+      connectAll(list);
     } catch (e: unknown) {
       setAuthed(false);
       setError(e instanceof Error ? e.message : String(e));
     }
-  }
+  }, [activeAgentId]);
 
-  useEffect(() => { refreshAuthAndBootstrap(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { refreshAuthAndBootstrap(); return () => { disconnectAll(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function newConversation(agentId: string) {
     const data = await apiPost<{ conversationId: string }>("/conversations", { agentId, title: `${agentId} chat` });
@@ -90,17 +127,40 @@ export default function Home() {
     setError(null);
     const userText = text.trim();
     setText("");
+
+    // In collab mode, tag which agents should respond
+    const respondingAgents = collabMode && collabAgentIds.size > 0
+      ? Array.from(collabAgentIds)
+      : [activeAgentId];
+
     setMessages((m) => [...m, { role: "user", content: userText }, { role: "agent", content: "" }]);
     setBusy(true);
     try {
-      await streamChat({ conversationId, message: userText }, (delta) => {
-        setMessages((m) => {
-          const copy = [...m];
-          const last = copy[copy.length - 1];
-          if (last?.role === "agent") last.content += delta;
-          return copy;
-        });
-      });
+      // Pass session + agent routing headers for Telegram-speed dispatch
+      const session = getSession(activeAgentId);
+      await streamChat(
+        {
+          conversationId,
+          message: userText,
+          agentId: activeAgentId,
+          sessionId: session?.sessionId,
+          collaborators: respondingAgents.length > 1 ? respondingAgents : undefined,
+        },
+        (delta) => {
+          setMessages((m) => {
+            const copy = [...m];
+            const last = copy[copy.length - 1];
+            if (last?.role === "agent") last.content += delta;
+            return copy;
+          });
+        },
+        undefined,
+        {
+          agentId: activeAgentId,
+          sessionId: session?.sessionId,
+          collaborators: respondingAgents.length > 1 ? respondingAgents : undefined,
+        },
+      );
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -237,6 +297,29 @@ export default function Home() {
      SIDEBAR
      ═══════════════════════════════════════════════════ */
   function Sidebar() {
+    function toggleExpand(id: string) {
+      setExpandedAgents((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+    }
+    function toggleCollab(id: string) {
+      setCollabAgentIds((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+    }
+    function sessionStatus(id: string) {
+      const s = agentSessions[id];
+      if (!s) return "disconnected";
+      return s.status;
+    }
+    const statusDot: Record<string, string> = {
+      connected: "bg-emerald-500",
+      busy: "bg-amber-500",
+      disconnected: "bg-zinc-600",
+    };
+
+    async function triggerScan(agentId: string) {
+      try {
+        await apiPost("/agents/scan", { agentId, scope: "all" });
+      } catch { /* ignore */ }
+    }
+
     return (
       <aside className={cx(
         "md:sticky md:top-[72px] md:h-[calc(100vh-72px)] md:block",
@@ -248,39 +331,102 @@ export default function Home() {
           <div className="glass-light rounded-2xl p-3">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-xs font-semibold text-zinc-100">🤖 Agents</h2>
-              <span className="text-[10px] text-zinc-500">{agents.length}</span>
-            </div>
-            <div className="space-y-1">
-              {agents.map((a) => (
+              <div className="flex items-center gap-1.5">
                 <button
-                  key={a.id}
-                  onClick={() => setActiveAgentId(a.id)}
-                  className={cx(
-                    "w-full text-left rounded-xl px-3 py-2 transition-all",
-                    a.id === activeAgentId
-                      ? "bg-white/10 border border-white/10"
-                      : "hover:bg-white/5"
+                  onClick={() => setCollabMode((c) => !c)}
+                  className={cx("text-[10px] px-1.5 py-0.5 rounded-md transition",
+                    collabMode ? "bg-indigo-500/20 text-indigo-400" : "text-zinc-500 hover:text-zinc-300"
                   )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-base">{a.emoji}</span>
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-white truncate">{a.name}</div>
-                      <div className="text-[10px] text-zinc-500">{a.id}</div>
+                  title="Toggle collaboration mode"
+                >👥 Collab</button>
+                <button onClick={() => setAddAgentOpen(true)} className="text-[10px] text-zinc-500 hover:text-zinc-300 px-1 transition" title="Add agent">＋</button>
+              </div>
+            </div>
+            <div className="space-y-0.5">
+              {agentTree.map((a) => {
+                const st = sessionStatus(a.id);
+                const children = a.children || [];
+                const isExpanded = expandedAgents.has(a.id);
+                return (
+                  <div key={a.id}>
+                    <div className="flex items-center gap-1">
+                      {/* Expand toggle (only if has sub-agents) */}
+                      {children.length > 0 ? (
+                        <button onClick={() => toggleExpand(a.id)} className="text-[10px] text-zinc-500 w-4 shrink-0">{isExpanded ? "▾" : "▸"}</button>
+                      ) : <span className="w-4 shrink-0" />}
+
+                      {/* Collab checkbox */}
+                      {collabMode && (
+                        <input type="checkbox" checked={collabAgentIds.has(a.id)} onChange={() => toggleCollab(a.id)}
+                          className="h-3 w-3 rounded border-zinc-600 bg-transparent accent-indigo-500 shrink-0" />
+                      )}
+
+                      <button
+                        onClick={() => setActiveAgentId(a.id)}
+                        className={cx(
+                          "flex-1 text-left rounded-xl px-2.5 py-2 transition-all min-w-0",
+                          a.id === activeAgentId
+                            ? "bg-white/10 border border-white/10"
+                            : "hover:bg-white/5"
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm shrink-0">{a.emoji}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-medium text-white truncate">{a.name}</div>
+                            <div className="text-[10px] text-zinc-500 truncate">{a.model || a.id}</div>
+                          </div>
+                          <span className={cx("relative flex h-2 w-2 shrink-0", statusDot[st])}>
+                            {st === "connected" && a.id === activeAgentId && (
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                            )}
+                            <span className={cx("relative inline-flex rounded-full h-2 w-2", statusDot[st])} />
+                          </span>
+                        </div>
+                      </button>
                     </div>
-                    {a.id === activeAgentId && (
-                      <span className="ml-auto relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-                      </span>
+
+                    {/* Sub-agents */}
+                    {isExpanded && children.length > 0 && (
+                      <div className="ml-5 mt-0.5 space-y-0.5 border-l border-white/5 pl-2">
+                        {children.map((sub) => {
+                          const subSt = sessionStatus(sub.id);
+                          return (
+                            <div key={sub.id} className="flex items-center gap-1">
+                              {collabMode && (
+                                <input type="checkbox" checked={collabAgentIds.has(sub.id)} onChange={() => toggleCollab(sub.id)}
+                                  className="h-3 w-3 rounded border-zinc-600 bg-transparent accent-indigo-500 shrink-0" />
+                              )}
+                              <button
+                                onClick={() => setActiveAgentId(sub.id)}
+                                className={cx(
+                                  "flex-1 text-left rounded-lg px-2 py-1.5 transition-all min-w-0",
+                                  sub.id === activeAgentId ? "bg-white/10 border border-white/10" : "hover:bg-white/5"
+                                )}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs">{sub.emoji}</span>
+                                  <span className="text-[11px] text-zinc-300 truncate">{sub.name}</span>
+                                  <span className={cx("ml-auto relative flex h-1.5 w-1.5 shrink-0 rounded-full", statusDot[subSt])} />
+                                </div>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                </button>
-              ))}
+                );
+              })}
               {agents.length === 0 && (
                 <div className="text-xs text-zinc-500 py-3 text-center">No agents connected</div>
               )}
             </div>
+            {collabMode && collabAgentIds.size > 0 && (
+              <div className="mt-2 pt-2 border-t border-white/5 text-[10px] text-indigo-400">
+                👥 {collabAgentIds.size} agent{collabAgentIds.size > 1 ? "s" : ""} selected for collaboration
+              </div>
+            )}
           </div>
 
           {/* Tab info */}
@@ -294,6 +440,7 @@ export default function Home() {
           <div className="glass-light rounded-2xl p-3">
             <div className="text-xs font-semibold text-zinc-100 mb-2">⚡ Quick Actions</div>
             <div className="space-y-1">
+              <button onClick={() => { if (activeAgent) triggerScan(activeAgent.id); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
               <button onClick={() => setNotesOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
               <button onClick={() => setSearchOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🔍 Search Everything</button>
               <button onClick={() => setActiveTab("skills")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
@@ -357,8 +504,16 @@ export default function Home() {
           <div className="flex items-center gap-2">
             <span className="text-base">{activeAgent?.emoji || "🤖"}</span>
             <div>
-              <div className="text-xs font-semibold text-white">{activeAgent?.name || "Agent"}</div>
-              <div className="text-[10px] text-zinc-500">{tabMeta.icon} {tabMeta.label} workspace</div>
+              <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                {activeAgent?.name || "Agent"}
+                {agentSessions[activeAgentId]?.status === "connected" && (
+                  <span className="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" title="Connected — no cold start" />
+                )}
+              </div>
+              <div className="text-[10px] text-zinc-500">
+                {activeAgent?.model || `${tabMeta.icon} ${tabMeta.label}`}
+                {collabMode && collabAgentIds.size > 0 && ` · 👥 ${collabAgentIds.size} collab`}
+              </div>
             </div>
           </div>
           <div className="text-[10px] text-zinc-600">
@@ -638,6 +793,66 @@ export default function Home() {
   }
 
   /* ═══════════════════════════════════════════════════
+     ADD AGENT DIALOG
+     ═══════════════════════════════════════════════════ */
+  function AddAgentDialog() {
+    const [newId, setNewId] = useState("");
+    const [newName, setNewName] = useState("");
+    const [newEmoji, setNewEmoji] = useState("🤖");
+    const [newModel, setNewModel] = useState("");
+    const [newParent, setNewParent] = useState("");
+    const [newDesc, setNewDesc] = useState("");
+
+    if (!addAgentOpen) return null;
+
+    function handleAdd() {
+      if (!newId.trim() || !newName.trim()) return;
+      const agent = addAgentToRegistry({
+        id: newId.trim(),
+        name: newName.trim(),
+        emoji: newEmoji || "🤖",
+        model: newModel || undefined,
+        parentId: newParent || null,
+        description: newDesc || undefined,
+        capabilities: [],
+      });
+      setAgents((prev) => [...prev, agent]);
+      // Connect the new agent immediately — no cold start
+      connectAll([agent]);
+      setAddAgentOpen(false);
+      setNewId(""); setNewName(""); setNewEmoji("🤖"); setNewModel(""); setNewParent(""); setNewDesc("");
+    }
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setAddAgentOpen(false)}>
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+        <div className="relative w-full max-w-md mx-4 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+          <div className="glass rounded-2xl overflow-hidden border border-white/10 shadow-2xl p-5 space-y-3">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">➕ Add Agent</h2>
+            <div className="grid grid-cols-[48px_1fr] gap-2">
+              <input className="rounded-lg bg-white/5 border border-white/10 px-2 py-2 text-center text-sm text-white outline-none" placeholder="🤖" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={4} />
+              <input className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Agent name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+            </div>
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Unique ID (e.g. research-agent)" value={newId} onChange={(e) => setNewId(e.target.value)} />
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Model (e.g. openai-codex/gpt-5.3-codex)" value={newModel} onChange={(e) => setNewModel(e.target.value)} />
+            <select className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-zinc-400 outline-none" value={newParent} onChange={(e) => setNewParent(e.target.value)}>
+              <option value="">No parent (top-level agent)</option>
+              {agents.filter((a) => !a.parentId).map((a) => (
+                <option key={a.id} value={a.id}>{a.emoji} {a.name} (sub-agent of)</option>
+              ))}
+            </select>
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Description (optional)" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} />
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setAddAgentOpen(false)} className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white transition">Cancel</button>
+              <button onClick={handleAdd} disabled={!newId.trim() || !newName.trim()} className="px-4 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-30 transition">Add Agent</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ═══════════════════════════════════════════════════
      ROUTING / RENDER
      ═══════════════════════════════════════════════════ */
 
@@ -700,6 +915,7 @@ export default function Home() {
       {/* Overlays */}
       <CommandPalette />
       <NotesDrawer />
+      <AddAgentDialog />
     </main>
   );
 }
