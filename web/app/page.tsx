@@ -70,7 +70,7 @@ export default function Home() {
       }
 
       // load agents
-      const data = await apiGet<{ agents: Agent[] }>("/api/agents");
+      const data = await apiGet<{ agents: Agent[] }>("/agents");
       const list = data.agents || [];
       setAgents(list);
 
@@ -91,7 +91,7 @@ export default function Home() {
   }, []);
 
   async function newConversation(agentId: string) {
-    const data = await apiPost("/api/conversations", {
+    const data = await apiPost("/conversations", {
       agentId,
       title: `${agentId} chat`,
     });
