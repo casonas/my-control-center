@@ -14,6 +14,12 @@ type D1Like = {
   prepare: (sql: string) => D1Stmt;
 };
 
+type Session = { sessionId: string; userId: string };
+
+function json(status: number, body: Record<string, unknown>) {
+  return Response.json(body, { status });
+}
+
 function getCookie(req: Request, name: string): string | null {
   const cookie = req.headers.get("cookie") || "";
   for (const part of cookie.split(";")) {
@@ -23,11 +29,7 @@ function getCookie(req: Request, name: string): string | null {
   return null;
 }
 
-function json(status: number, body: Record<string, unknown>) {
-  return Response.json(body, { status });
-}
-
-async function requireSession(req: Request, DB: D1Like) {
+async function requireSession(req: Request, DB: D1Like): Promise<Session | null> {
   const sessionId = getCookie(req, "mcc_session");
   if (!sessionId) return null;
 
@@ -43,7 +45,8 @@ async function requireSession(req: Request, DB: D1Like) {
     .bind(sessionId)
     .first<{ session_id: string; user_id: string }>();
 
-  return row ? { sessionId: row.session_id, userId: row.user_id } : null;
+  if (!row) return null;
+  return { sessionId: row.session_id, userId: row.user_id };
 }
 
 function randomId(bytes = 16) {
@@ -60,8 +63,21 @@ function toPrompt(payload: unknown): string {
   try {
     return JSON.stringify(payload);
   } catch {
-    // fallback if payload has circular refs
     return String(payload);
+  }
+}
+
+function errorDetails(err: unknown): { name?: string; message: string; stack?: string } {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  if (typeof err === "string") {
+    return { message: err };
+  }
+  try {
+    return { message: JSON.stringify(err) };
+  } catch {
+    return { message: "Unknown error" };
   }
 }
 
@@ -84,17 +100,18 @@ export async function POST(
     const { agentId } = await ctx.params;
     if (!agentId) return json(400, { ok: false, requestId, error: "Missing agentId" });
 
-    const body = (await req.json().catch(() => ({}))) as {
-      payload?: unknown;
-      trigger?: string; // accepted but not stored in current schema
-    };
+    // Parse JSON body (explicit 400 on invalid JSON)
+    let body: { payload?: unknown; trigger?: string } = {};
+    try {
+      body = (await req.json()) as { payload?: unknown; trigger?: string };
+    } catch {
+      return json(400, { ok: false, requestId, error: "Invalid JSON body" });
+    }
 
     const runId = `run_${randomId(12)}`;
     const prompt = toPrompt(body.payload);
 
-    // Insert using CURRENT schema for agent_runs:
-    // (id, user_id, agent_id, prompt, response, artifacts, tokens_used, duration_ms, status, created_at)
-    // Many have defaults, but user_id/agent_id are NOT NULL so we bind those.
+    // Insert using your CURRENT schema for agent_runs
     await DB.prepare(
       `
       INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
@@ -116,19 +133,18 @@ export async function POST(
       },
     });
   } catch (err: unknown) {
+    const details = errorDetails(err);
+
     console.error("[agents/run] error", {
       requestId,
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
+      ...details,
     });
 
     return json(500, {
       ok: false,
       requestId,
       error: "Internal error",
-      name: err?.name,
-      message: err?.message,
+      ...details,
     });
   }
 }
