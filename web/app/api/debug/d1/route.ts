@@ -4,11 +4,11 @@ export const runtime = "edge";
 
 export async function GET() {
   const { env } = getRequestContext();
-  const DB = (env as any).DB as D1Database;
+  const DB = (env as any).DB;
 
   const row = await DB
     .prepare("SELECT COUNT(*) as n FROM sessions")
-    .first<{ n: number }>();
+    .first();
 
   return Response.json({
     ok: true,
