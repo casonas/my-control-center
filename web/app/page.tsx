@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
 import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
@@ -74,7 +74,7 @@ export default function Home() {
   useEffect(() => { refreshAuthAndBootstrap(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function newConversation(agentId: string) {
-    const data = await apiPost("/conversations", { agentId, title: `${agentId} chat` });
+    const data = await apiPost<{ conversationId: string }>("/conversations", { agentId, title: `${agentId} chat` });
     setConversationId(data.conversationId);
     setMessages([]);
   }
@@ -82,7 +82,7 @@ export default function Home() {
   useEffect(() => {
     if (!authed || !agents.length) return;
     newConversation(activeAgentId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [activeAgentId, authed, agents.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeAgentId, authed, agents.length]);
 
   async function send() {
     if (!conversationId || !text.trim() || busy) return;

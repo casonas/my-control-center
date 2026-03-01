@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import type { TabKey, Note, Assignment, Skill, JobPosting, ResearchArticle } from "@/lib/types";
-import { TABS } from "@/lib/types";
 import {
   getNotes, saveNote, deleteNote,
   getAssignments, saveAssignment, deleteAssignment, toggleAssignment,
@@ -10,7 +9,6 @@ import {
   getJobs, saveJob, toggleJobApplied,
   getWatchlist,
   getResearch, toggleArticleRead, saveArticleNotes,
-  searchAll,
 } from "@/lib/store";
 
 /* ────────── helpers ────────── */
@@ -114,14 +112,11 @@ export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
   const skills = useMemo(() => getSkills(), [tick]);
   const jobs = useMemo(() => getJobs(), [tick]);
   const research = useMemo(() => getResearch(), [tick]);
-  const watchlist = useMemo(() => getWatchlist(), [tick]);
   const notes = useMemo(() => getNotes(), [tick]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
-  const tabMeta = TABS.find((t) => t.key === activeTab)!;
-
   switch (activeTab) {
-    case "home": return <HomeWidgets assignments={assignments} skills={skills} jobs={jobs} research={research} notes={notes} refresh={refresh} />;
+    case "home": return <HomeWidgets assignments={assignments} skills={skills} jobs={jobs} research={research} refresh={refresh} />;
     case "school": return <SchoolWidgets assignments={assignments} notes={notes} refresh={refresh} />;
     case "jobs": return <JobsWidgets jobs={jobs} refresh={refresh} />;
     case "skills": return <SkillsWidgets skills={skills} refresh={refresh} />;
@@ -135,8 +130,8 @@ export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
 /* ═══════════════════════════════════════════════════════
    HOME  — Todoist-style command center
    ═══════════════════════════════════════════════════════ */
-function HomeWidgets({ assignments, skills, jobs, research, notes, refresh }: {
-  assignments: Assignment[]; skills: Skill[]; jobs: JobPosting[]; research: ResearchArticle[]; notes: Note[]; refresh: () => void;
+function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
+  assignments: Assignment[]; skills: Skill[]; jobs: JobPosting[]; research: ResearchArticle[]; refresh: () => void;
 }) {
   const [pomodoroSec, setPomodoroSec] = useState(25 * 60);
   const [pomodoroRunning, setPomodoroRunning] = useState(false);
@@ -610,7 +605,7 @@ function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => vo
 /* ═══════════════════════════════════════════════════════
    SPORTS — ESPN style
    ═══════════════════════════════════════════════════════ */
-function SportsWidgets({ refresh }: { refresh: () => void }) {
+function SportsWidgets({ refresh: _refresh }: { refresh: () => void }) {
   const [league, setLeague] = useState("NBA");
   const leagues = ["NBA", "NFL", "MLB", "NHL", "Soccer"];
 
@@ -702,7 +697,7 @@ function SportsWidgets({ refresh }: { refresh: () => void }) {
 /* ═══════════════════════════════════════════════════════
    STOCKS — Yahoo Finance style
    ═══════════════════════════════════════════════════════ */
-function StocksWidgets({ refresh }: { refresh: () => void }) {
+function StocksWidgets({ refresh: _refresh }: { refresh: () => void }) {
   const watchlist = getWatchlist("stock");
 
   // Simulated data (agent would provide real data)
