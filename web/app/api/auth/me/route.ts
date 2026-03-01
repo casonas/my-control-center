@@ -31,13 +31,13 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: "DB binding missing" }, { status: 500 });
   }
 
-  // ⚠️ If your login route uses a different cookie name, change this to match.
   const sessionId = getCookie(req, "mcc_session");
+
+  // Return 200 w/ authenticated false (so client wrappers don't treat it as error)
   if (!sessionId) {
-    return Response.json({ ok: false, authenticated: false }, { status: 401 });
+    return Response.json({ ok: true, authenticated: false, authed: false }, { status: 200 });
   }
 
-  // Join sessions → users, only if not expired
   const row = await DB.prepare(
     `
     SELECT
@@ -56,16 +56,17 @@ export async function GET(req: Request) {
     .first<{ session_id: string; user_id: string; csrf_token: string; username: string }>();
 
   if (!row) {
-    // Optional cleanup: delete expired/missing session row
+    // Optional cleanup
     await DB.prepare(`DELETE FROM sessions WHERE id = ?`).bind(sessionId).run();
 
-    return Response.json({ ok: false, authenticated: false }, { status: 401 });
+    return Response.json({ ok: true, authenticated: false, authed: false }, { status: 200 });
   }
 
   return Response.json({
     ok: true,
     authenticated: true,
+    authed: true, // <<< THIS fixes your UI gating
     user: { id: row.user_id, username: row.username },
-    csrfToken: row.csrf_token
+    csrfToken: row.csrf_token,
   });
 }
