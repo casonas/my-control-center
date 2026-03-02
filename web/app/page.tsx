@@ -15,6 +15,13 @@ import {
   getSession,
   type AgentSession,
 } from "@/lib/agentSession";
+import {
+  getWorkspace,
+  switchToTab,
+  switchToAgent,
+  setWorkspace,
+  setLastSessionForAgent,
+} from "@/lib/workspace";
 
 function cx(...c: (string | false | undefined | null)[]) {
   return c.filter(Boolean).join(" ");
@@ -117,7 +124,8 @@ export default function Home() {
   const [authed, setAuthed] = useState<boolean | null>(null);
 
   /* ─── UI ─── */
-  const [activeTab, setActiveTab] = useState<TabKey>("home");
+  const [activeTab, setActiveTabRaw] = useState<TabKey>(() => getWorkspace().tab);
+  const [activeAgentIdFromWs] = useState(() => getWorkspace().agentId);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -127,12 +135,25 @@ export default function Home() {
 
   /* ─── Agents ─── */
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState<string>("main");
+  const [activeAgentId, setActiveAgentIdRaw] = useState<string>(activeAgentIdFromWs);
   const [agentSessions, setAgentSessions] = useState<Record<string, AgentSession>>({});
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [collabMode, setCollabMode] = useState(false);
   const [collabAgentIds, setCollabAgentIds] = useState<Set<string>>(new Set());
   const [addAgentOpen, setAddAgentOpen] = useState(false);
+
+  /* ─── Workspace-aware switching ─── */
+  const handleSwitchTab = useCallback((tab: TabKey) => {
+    const ws = switchToTab(tab);
+    setActiveTabRaw(ws.tab);
+    setActiveAgentIdRaw(ws.agentId);
+  }, []);
+
+  const handleSwitchAgent = useCallback((agentId: string) => {
+    const ws = switchToAgent(agentId);
+    setActiveTabRaw(ws.tab);
+    setActiveAgentIdRaw(ws.agentId);
+  }, []);
 
   /* ─── Chat ─── */
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -189,7 +210,7 @@ export default function Home() {
       const list = [...apiAgents, ...custom];
       setAgents(list);
       const nextId = list.find((a) => a.id === activeAgentId)?.id ? activeAgentId : list[0]?.id || "main";
-      setActiveAgentId(nextId);
+      handleSwitchAgent(nextId);
 
       // Warm up all agents immediately — no cold starts
       connectAll(list);
@@ -197,7 +218,7 @@ export default function Home() {
       setAuthed(false);
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [activeAgentId]);
+  }, [activeAgentId, handleSwitchAgent]);
 
   useEffect(() => { refreshAuthAndBootstrap(); return () => { disconnectAll(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -227,9 +248,13 @@ export default function Home() {
     newConversation(activeAgentId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [activeAgentId, authed, agents.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep cache in sync as messages stream in
+  // Keep cache in sync as messages stream in + persist sessionId to workspace
   useEffect(() => {
     chatCacheRef.current[activeAgentId] = { msgs: messages, convId: conversationId };
+    if (conversationId) {
+      setLastSessionForAgent(activeAgentId, conversationId);
+      setWorkspace({ sessionId: conversationId });
+    }
   }, [messages, conversationId, activeAgentId]);
 
   async function send(userText: string) {
@@ -372,7 +397,7 @@ export default function Home() {
             {TABS.map((t) => (
               <button
                 key={t.key}
-                onClick={() => setActiveTab(t.key)}
+                onClick={() => handleSwitchTab(t.key)}
                 className={cx(
                   "px-3 py-2 rounded-xl text-xs font-medium transition-all",
                   activeTab === t.key
@@ -407,7 +432,7 @@ export default function Home() {
           {TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => setActiveTab(t.key)}
+              onClick={() => handleSwitchTab(t.key)}
               className={cx(
                 "whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-medium transition-all shrink-0",
                 activeTab === t.key
@@ -492,7 +517,7 @@ export default function Home() {
                       )}
 
                       <button
-                        onClick={() => setActiveAgentId(a.id)}
+                        onClick={() => handleSwitchAgent(a.id)}
                         className={cx(
                           "flex-1 text-left rounded-xl px-2.5 py-2 transition-all min-w-0",
                           a.id === activeAgentId
@@ -528,7 +553,7 @@ export default function Home() {
                                   className="h-3 w-3 rounded border-zinc-600 bg-transparent accent-indigo-500 shrink-0" />
                               )}
                               <button
-                                onClick={() => setActiveAgentId(sub.id)}
+                                onClick={() => handleSwitchAgent(sub.id)}
                                 className={cx(
                                   "flex-1 text-left rounded-lg px-2 py-1.5 transition-all min-w-0",
                                   sub.id === activeAgentId ? "bg-white/10 border border-white/10" : "hover:bg-white/5"
@@ -573,8 +598,8 @@ export default function Home() {
               <button onClick={() => { if (activeAgent) triggerScan(activeAgent.id); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
               <button onClick={() => setNotesOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
               <button onClick={() => setSearchOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🔍 Search Everything</button>
-              <button onClick={() => setActiveTab("skills")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
-              <button onClick={() => setActiveTab("jobs")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
+              <button onClick={() => handleSwitchTab("skills")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
+              <button onClick={() => handleSwitchTab("jobs")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
             </div>
           </div>
         </div>
