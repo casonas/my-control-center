@@ -721,89 +721,205 @@ function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => vo
    SPORTS — ESPN style
    ═══════════════════════════════════════════════════════ */
 function SportsWidgets(_: { refresh: () => void }) {
-  const [league, setLeague] = useState("NBA");
-  const leagues = ["NBA", "NFL", "MLB", "NHL", "Soccer"];
-
-  // Demo scores (agent would fill these in)
-  const demoScores = [
-    { home: "Lakers", away: "Celtics", homeScore: 112, awayScore: 108, status: "Final", league: "NBA" },
-    { home: "Warriors", away: "Nets", homeScore: 98, awayScore: 102, status: "Final", league: "NBA" },
-    { home: "Heat", away: "Bucks", homeScore: 0, awayScore: 0, status: "7:30 PM", league: "NBA" },
-    { home: "Chiefs", away: "Eagles", homeScore: 24, awayScore: 21, status: "Final", league: "NFL" },
-    { home: "Yankees", away: "Red Sox", homeScore: 5, awayScore: 3, status: "Final", league: "MLB" },
+  const [league, setLeague] = useState("nba");
+  const leagues = [
+    { key: "nba", label: "NBA" }, { key: "nfl", label: "NFL" },
+    { key: "mlb", label: "MLB" }, { key: "nhl", label: "NHL" },
   ];
-  const scores = demoScores.filter((s) => s.league === league);
+  const [filter, setFilter] = useState("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  interface Game {
+    id: string; home_team_name: string; away_team_name: string;
+    home_score?: number; away_score?: number; status: string;
+    start_time: string; period?: string; clock?: string;
+  }
+  interface WlTeam { league: string; team_id: string; team_name: string }
+  interface Prediction {
+    id: string; game_id: string; home_team_name?: string; away_team_name?: string;
+    proj_spread_home?: number; proj_total?: number; win_prob_home?: number;
+    edge_spread?: number; edge_total?: number; explanation_md?: string;
+  }
+
+  const [games, setGames] = useState<Game[]>([]);
+  const [watchlist, setWatchlist] = useState<WlTeam[]>([]);
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [addTeam, setAddTeam] = useState("");
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
+
+  const loadGames = useCallback(async () => {
+    try {
+      const d = await apiGet<{ games: Game[] }>(`/sports/games?league=${league}&filter=${filter}`);
+      setGames(d.games || []);
+    } catch { /* */ }
+  }, [league, filter]);
+
+  const loadWatchlist = useCallback(async () => {
+    try {
+      const d = await apiGet<{ teams: WlTeam[] }>(`/sports/watchlist?league=${league}`);
+      setWatchlist(d.teams || []);
+    } catch { /* */ }
+  }, [league]);
+
+  const loadPredictions = useCallback(async () => {
+    try {
+      const d = await apiGet<{ predictions: Prediction[] }>(`/sports/predictions?league=${league}`);
+      setPredictions(d.predictions || []);
+    } catch { /* */ }
+  }, [league]);
+
+  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); }, [loadGames, loadWatchlist, loadPredictions]);
+
+  async function handleRefresh() {
+    setRefreshing(true); setStatusMsg(null);
+    try {
+      const d = await apiPost<{ ok: boolean; games?: number; error?: string; source?: string }>("/sports/refresh", { league });
+      setStatusMsg(d.ok ? `Refreshed (${d.source || "done"})` : (d.error || "Failed"));
+      loadGames();
+    } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleAddTeam() {
+    if (!addTeam.trim()) return;
+    const teamId = addTeam.trim().toLowerCase().replace(/\s+/g, "-");
+    try {
+      await apiPost("/sports/watchlist", { league, teamId, teamName: addTeam.trim() });
+      setAddTeam("");
+      loadWatchlist();
+    } catch { /* */ }
+  }
+
+  const activeGame = games.find((g) => g.id === activeGameId);
+  const activePred = predictions.find((p) => p.game_id === activeGameId);
 
   return (
     <div className="space-y-3">
       {/* League tabs */}
       <div className="flex gap-1 overflow-auto pb-1">
         {leagues.map((l) => (
-          <button key={l} onClick={() => setLeague(l)} className={cx(
+          <button key={l.key} onClick={() => setLeague(l.key)} className={cx(
             "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap",
-            league === l ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{l}</button>
+            league === l.key ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{l.label}</button>
         ))}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh"}
+        </button>
+        {(["all", "watchlist", "live", "final"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-2 py-1 rounded-lg text-[10px] font-medium border transition capitalize",
+            filter === f ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f}</button>
+        ))}
+        {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
       <AgentStatus verb="fetching live scores" />
 
       {/* Scores */}
       <Card title="Scores" icon="🏆">
-        {scores.length === 0 ? <EmptyState icon="🏟️" text={`No ${league} scores. Ask agent to fetch.`} /> : (
-          <div className="space-y-2">
-            {scores.map((s, i) => (
-              <div key={i} className="rounded-xl bg-white/5 p-3">
+        {games.length === 0 ? (
+          <EmptyState icon="🏟️" text={`No ${league.toUpperCase()} games. Click Refresh or connect a sports data provider.`} />
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-auto">
+            {games.map((g) => (
+              <button key={g.id} onClick={() => setActiveGameId(g.id)}
+                className={cx("w-full text-left rounded-xl p-3 transition",
+                  activeGameId === g.id ? "bg-white/10 ring-1 ring-rose-500/30" : "bg-white/5 hover:bg-white/10"
+                )}>
                 <div className="flex items-center justify-between">
                   <div className="text-xs">
-                    <div className={cx("font-semibold", s.homeScore > s.awayScore ? "text-white" : "text-zinc-400")}>{s.home} <span className="font-bold">{s.homeScore}</span></div>
-                    <div className={cx("font-semibold mt-0.5", s.awayScore > s.homeScore ? "text-white" : "text-zinc-400")}>{s.away} <span className="font-bold">{s.awayScore}</span></div>
+                    <div className={cx("font-semibold", (g.home_score || 0) > (g.away_score || 0) ? "text-white" : "text-zinc-400")}>
+                      {g.home_team_name} <span className="font-bold">{g.home_score ?? "-"}</span>
+                    </div>
+                    <div className={cx("font-semibold mt-0.5", (g.away_score || 0) > (g.home_score || 0) ? "text-white" : "text-zinc-400")}>
+                      {g.away_team_name} <span className="font-bold">{g.away_score ?? "-"}</span>
+                    </div>
                   </div>
-                  <Badge color={s.status === "Final" ? "zinc" : "emerald"}>{s.status}</Badge>
+                  <div className="text-right">
+                    <Badge color={g.status === "final" ? "zinc" : g.status === "live" ? "emerald" : "amber"}>{g.status}</Badge>
+                    {g.period && <div className="text-[9px] text-zinc-500 mt-0.5">{g.period} {g.clock || ""}</div>}
+                  </div>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}
       </Card>
 
-      {/* Projections */}
+      {/* Projections & Odds — shows for active game */}
       <Card title="Projections & Odds" icon="📊">
-        <div className="space-y-2">
-          {[
-            { matchup: "Heat vs Bucks", spread: "MIL -4.5", over: "O 218.5" },
-            { matchup: "Suns vs Mavs", spread: "DAL -2", over: "O 224" },
-          ].map((p, i) => (
-            <div key={i} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-              <span className="text-xs text-white">{p.matchup}</span>
-              <div className="flex gap-2">
-                <Badge color="rose">{p.spread}</Badge>
-                <Badge color="amber">{p.over}</Badge>
-              </div>
+        {activeGame && activePred ? (
+          <div className="space-y-2">
+            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              {activePred.proj_spread_home != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Model Spread</div>
+                  <div className="text-white font-semibold">{activePred.proj_spread_home > 0 ? "+" : ""}{activePred.proj_spread_home}</div>
+                </div>
+              )}
+              {activePred.proj_total != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Model Total</div>
+                  <div className="text-white font-semibold">{activePred.proj_total}</div>
+                </div>
+              )}
+              {activePred.win_prob_home != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Win Prob (Home)</div>
+                  <div className="text-white font-semibold">{(activePred.win_prob_home * 100).toFixed(1)}%</div>
+                </div>
+              )}
+              {activePred.edge_spread != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Edge (Spread)</div>
+                  <div className={cx("font-semibold", activePred.edge_spread > 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {activePred.edge_spread > 0 ? "+" : ""}{activePred.edge_spread.toFixed(1)}
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-        <div className="mt-2 text-[10px] text-zinc-500">Ask your sports agent for detailed analysis and updated lines.</div>
+            {activePred.explanation_md && <div className="text-[10px] text-zinc-400 mt-1">{activePred.explanation_md}</div>}
+          </div>
+        ) : activeGame ? (
+          <div className="space-y-2">
+            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+            <div className="text-[10px] text-zinc-400">Model projections not generated yet.</div>
+            <button onClick={() => apiPost("/sports/predictions", { league }).catch(() => {})}
+              className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 transition">
+              Generate Projections →
+            </button>
+          </div>
+        ) : (
+          <div className="text-[10px] text-zinc-400">Select a game above to view projections and odds.</div>
+        )}
       </Card>
 
       {/* Watchlist */}
-      <Card title="My Watchlist" icon="⭐">
+      <Card title="My Watchlist" icon="⭐" actions={
+        <div className="flex items-center gap-1">
+          <input className="w-24 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[10px] text-white placeholder-zinc-500 outline-none"
+            placeholder="Team name" value={addTeam} onChange={(e) => setAddTeam(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAddTeam(); }} />
+          <button onClick={handleAddTeam} className="text-[10px] px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">+</button>
+        </div>
+      }>
         <div className="space-y-1.5">
-          {["Lakers", "Chiefs", "Yankees", "Barcelona"].map((team) => (
-            <div key={team} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
-              <span className="text-xs text-white">{team}</span>
-              <span className="text-[10px] text-zinc-500">Tracking</span>
+          {watchlist.length === 0 && <div className="text-[10px] text-zinc-500">Add teams to your watchlist above.</div>}
+          {watchlist.map((team) => (
+            <div key={team.team_id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+              <span className="text-xs text-white">{team.team_name}</span>
+              <span className="text-[10px] text-zinc-500">⭐ Tracking</span>
             </div>
           ))}
         </div>
-      </Card>
-
-      {/* Stats */}
-      <Card title="Player Stats" icon="📈">
-        <div className="text-[10px] text-zinc-400">Ask your sports agent to pull detailed player statistics, season averages, and rankings.</div>
-        <button className="mt-2 px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 transition">
-          Ask Agent →
-        </button>
       </Card>
     </div>
   );
