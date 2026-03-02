@@ -246,7 +246,7 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
 /* ═══════════════════════════════════════════════════════
    SCHOOL — Notion + Blackboard + Email
    ═══════════════════════════════════════════════════════ */
-function SchoolWidgets({ assignments, notes, refresh }: {
+function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refresh }: {
   assignments: Assignment[]; notes: Note[]; refresh: () => void;
 }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -256,24 +256,114 @@ function SchoolWidgets({ assignments, notes, refresh }: {
   const [newPriority, setNewPriority] = useState<"low" | "medium" | "high">("medium");
   const [noteTitle, setNoteTitle] = useState("");
   const [noteContent, setNoteContent] = useState("");
+  const [filter, setFilter] = useState("all");
 
-  const schoolNotes = notes.filter((n) => n.tab === "school");
-  const pending = assignments.filter((a) => !a.completed);
-  const completed = assignments.filter((a) => a.completed);
+  // API-backed data
+  interface ApiAssignment {
+    id: string; title: string; due_at: string; status: string; priority?: string;
+    course_code?: string; course_name?: string; description?: string;
+  }
+  interface ApiNote { id: string; title: string; content_md: string; updated_at: string }
+  interface CalEvent { id: string; title: string; start: string; status: string }
 
-  function handleAddAssignment() {
+  const [apiAssignments, setApiAssignments] = useState<ApiAssignment[]>([]);
+  const [apiNotes, setApiNotes] = useState<ApiNote[]>([]);
+  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  const loadAssignments = useCallback(async (f: string) => {
+    try {
+      const d = await apiGet<{ assignments: ApiAssignment[] }>(`/school/assignments?filter=${f}`);
+      if (d.assignments) { setApiAssignments(d.assignments); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadNotes = useCallback(async () => {
+    try { const d = await apiGet<{ notes: ApiNote[] }>("/school/notes"); setApiNotes(d.notes || []); } catch { /* */ }
+  }, []);
+
+  const loadCalendar = useCallback(async () => {
+    try {
+      const from = new Date().toISOString().slice(0, 10);
+      const to = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const d = await apiGet<{ events: CalEvent[] }>(`/school/calendar?from=${from}&to=${to}`);
+      setCalEvents(d.events || []);
+    } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadAssignments(filter); loadNotes(); loadCalendar(); }, [filter, loadAssignments, loadNotes, loadCalendar]);
+
+  async function handleAddAssignment() {
     if (!newTitle.trim()) return;
-    saveAssignment({ title: newTitle.trim(), course: newCourse.trim(), dueDate: newDate, priority: newPriority });
+    if (hasApi) {
+      try {
+        const dueAt = newDate ? new Date(newDate).toISOString() : new Date(Date.now() + 7 * 86400000).toISOString();
+        await apiPost("/school/assignments", { title: newTitle.trim(), dueAt, priority: newPriority });
+        loadAssignments(filter);
+      } catch { /* fallback */ }
+    } else {
+      saveAssignment({ title: newTitle.trim(), course: newCourse.trim(), dueDate: newDate, priority: newPriority });
+      refresh();
+    }
     setNewTitle(""); setNewCourse(""); setNewDate(""); setNewPriority("medium"); setShowAdd(false);
-    refresh();
   }
 
-  function handleAddNote() {
-    if (!noteTitle.trim()) return;
-    saveNote({ tab: "school", title: noteTitle.trim(), content: noteContent });
-    setNoteTitle(""); setNoteContent("");
-    refresh();
+  async function handleToggleStatus(id: string, currentStatus: string) {
+    if (hasApi) {
+      const newStatus = currentStatus === "done" ? "open" : "done";
+      try { await apiPatch(`/school/assignments/${id}`, { status: newStatus }); loadAssignments(filter); }
+      catch { /* fallback */ }
+    } else {
+      toggleAssignment(id); refresh();
+    }
   }
+
+  async function handleDeleteAssignment(id: string) {
+    if (hasApi) {
+      try {
+        await apiPatch(`/school/assignments/${id}`, { status: "dropped" });
+        loadAssignments(filter);
+      } catch { /* fallback */ deleteAssignment(id); refresh(); }
+    } else {
+      deleteAssignment(id); refresh();
+    }
+  }
+
+  async function handleAddNote() {
+    if (!noteTitle.trim()) return;
+    if (hasApi) {
+      try { await apiPost("/school/notes", { title: noteTitle.trim(), contentMd: noteContent }); loadNotes(); }
+      catch { /* fallback */ }
+    } else {
+      saveNote({ tab: "school", title: noteTitle.trim(), content: noteContent });
+      refresh();
+    }
+    setNoteTitle(""); setNoteContent("");
+  }
+
+  function handleExportICS() {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+    window.open(`/api/school/calendar?from=${from}&to=${to}&format=ics`, "_blank");
+  }
+
+  // Merge display: prefer API, fallback to local
+  const schoolNotes = hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school");
+  const pending = hasApi
+    ? apiAssignments.filter((a) => ["open", "in_progress"].includes(a.status))
+    : localAssignments.filter((a) => !a.completed);
+  const completed = hasApi
+    ? apiAssignments.filter((a) => a.status === "done")
+    : localAssignments.filter((a) => a.completed);
+
+  // Calendar: group events by date
+  const calByDate = calEvents.reduce<Record<string, CalEvent[]>>((acc, ev) => {
+    const day = ev.start.slice(0, 10);
+    (acc[day] = acc[day] || []).push(ev);
+    return acc;
+  }, {});
+  const calDays = Object.keys(calByDate).sort();
 
   return (
     <div className="space-y-3">
@@ -284,23 +374,60 @@ function SchoolWidgets({ assignments, notes, refresh }: {
         <StatBox icon="📝" value={schoolNotes.length} label="Notes" />
       </div>
 
-      {/* Blackboard & Email */}
+      {/* Calendar / ICS controls */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => setShowCalendar(!showCalendar)}
+          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium border transition",
+            showCalendar ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>📅 Calendar</button>
+        <button onClick={handleExportICS}
+          className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs border border-white/5 hover:bg-white/10 transition">
+          ⬇ Export ICS
+        </button>
+        {/* Filter tabs */}
+        {(["all", "open", "due_soon", "late"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-2 py-1 rounded-lg text-[10px] font-medium border transition capitalize",
+            filter === f ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f === "due_soon" ? "Due Soon" : f}</button>
+        ))}
+      </div>
+
+      {/* Calendar view */}
+      {showCalendar && (
+        <Card title="Upcoming Calendar" icon="📅">
+          <div className="space-y-2 max-h-48 overflow-auto">
+            {calDays.length === 0 && <div className="text-[10px] text-zinc-500">No events in the next 30 days.</div>}
+            {calDays.map((day) => (
+              <div key={day}>
+                <div className="text-[10px] text-zinc-400 font-semibold mb-0.5">{new Date(day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
+                {calByDate[day].map((ev) => (
+                  <div key={ev.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-[10px]">
+                    <span className={cx("w-1.5 h-1.5 rounded-full", ev.status === "done" ? "bg-emerald-500" : "bg-violet-500")} />
+                    <span className="text-white truncate">{ev.title}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Connectors */}
       <div className="grid grid-cols-2 gap-2">
         <div className="glass-light rounded-xl p-3 animate-fade-in">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm">🎓</span>
             <span className="text-xs font-semibold text-zinc-100">Blackboard</span>
           </div>
-          <div className="text-[10px] text-zinc-400">Ask agent to sync your course schedule and due dates from Blackboard.</div>
-          <AgentStatus verb="ready to sync" />
+          <div className="text-[10px] text-zinc-400">Ask agent to sync from Blackboard.</div>
         </div>
         <div className="glass-light rounded-xl p-3 animate-fade-in">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm">📧</span>
             <span className="text-xs font-semibold text-zinc-100">Email</span>
           </div>
-          <div className="text-[10px] text-zinc-400">Connect email for assignment reminders and school notifications.</div>
-          <AgentStatus verb="monitoring inbox" />
+          <div className="text-[10px] text-zinc-400">Connect email for reminders.</div>
         </div>
       </div>
 
@@ -329,28 +456,41 @@ function SchoolWidgets({ assignments, notes, refresh }: {
         )}
         {pending.length === 0 && !showAdd && <EmptyState icon="🎉" text="No pending assignments" />}
         <div className="space-y-1.5 max-h-64 overflow-auto">
-          {pending.map((a) => (
-            <div key={a.id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
-              <button onClick={() => { toggleAssignment(a.id); refresh(); }} className="w-4 h-4 rounded border border-white/20 shrink-0 hover:border-violet-400 transition flex items-center justify-center text-[10px]">
-                {a.completed && "✓"}
-              </button>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs text-white truncate">{a.title}</div>
-                <div className="text-[10px] text-zinc-500">{a.course}{a.course && a.dueDate && " · "}{a.dueDate && relDate(a.dueDate)}</div>
+          {pending.map((a) => {
+            const id = hasApi ? (a as ApiAssignment).id : (a as Assignment).id;
+            const title = hasApi ? (a as ApiAssignment).title : (a as Assignment).title;
+            const course = hasApi ? ((a as ApiAssignment).course_code || "") : (a as Assignment).course;
+            const dueDate = hasApi ? (a as ApiAssignment).due_at : (a as Assignment).dueDate;
+            const priority = hasApi ? ((a as ApiAssignment).priority || "medium") : (a as Assignment).priority;
+            const status = hasApi ? (a as ApiAssignment).status : ((a as Assignment).completed ? "done" : "open");
+            return (
+              <div key={id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
+                <button onClick={() => handleToggleStatus(id, status)}
+                  className="w-4 h-4 rounded border border-white/20 shrink-0 hover:border-violet-400 transition flex items-center justify-center text-[10px]">
+                  {status === "done" && "✓"}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-white truncate">{title}</div>
+                  <div className="text-[10px] text-zinc-500">{course}{course && dueDate ? " · " : ""}{dueDate && relDate(dueDate)}</div>
+                </div>
+                <Badge color={priority === "high" ? "rose" : priority === "medium" ? "amber" : "emerald"}>{priority}</Badge>
+                <button onClick={() => handleDeleteAssignment(id)} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
               </div>
-              <Badge color={a.priority === "high" ? "rose" : a.priority === "medium" ? "amber" : "emerald"}>{a.priority}</Badge>
-              <button onClick={() => { deleteAssignment(a.id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
         {completed.length > 0 && (
           <div className="mt-3 pt-3 border-t border-white/5">
             <div className="text-[10px] text-zinc-500 mb-1.5">Completed ({completed.length})</div>
-            {completed.slice(0, 3).map((a) => (
-              <div key={a.id} className="flex items-center gap-2 px-3 py-1 text-xs text-zinc-500 line-through">
-                <span>✓</span><span className="truncate">{a.title}</span>
-              </div>
-            ))}
+            {completed.slice(0, 3).map((a) => {
+              const id = hasApi ? (a as ApiAssignment).id : (a as Assignment).id;
+              const title = hasApi ? (a as ApiAssignment).title : (a as Assignment).title;
+              return (
+                <div key={id} className="flex items-center gap-2 px-3 py-1 text-xs text-zinc-500 line-through">
+                  <span>✓</span><span className="truncate">{title}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </Card>
@@ -363,15 +503,20 @@ function SchoolWidgets({ assignments, notes, refresh }: {
           <button onClick={handleAddNote} disabled={!noteTitle.trim()} className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 disabled:opacity-30 transition">Save Note</button>
         </div>
         <div className="space-y-1.5 max-h-40 overflow-auto">
-          {schoolNotes.map((n) => (
-            <div key={n.id} className="flex items-start gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-white">{n.title}</div>
-                <div className="text-[10px] text-zinc-400 truncate">{n.content || "Empty note"}</div>
+          {(hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school")).map((n) => {
+            const id = hasApi ? (n as ApiNote).id : (n as Note).id;
+            const title = hasApi ? (n as ApiNote).title : (n as Note).title;
+            const content = hasApi ? (n as ApiNote).content_md : (n as Note).content;
+            return (
+              <div key={id} className="flex items-start gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-white">{title}</div>
+                  <div className="text-[10px] text-zinc-400 truncate">{content || "Empty note"}</div>
+                </div>
+                {!hasApi && <button onClick={() => { deleteNote(id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>}
               </div>
-              <button onClick={() => { deleteNote(n.id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
     </div>
