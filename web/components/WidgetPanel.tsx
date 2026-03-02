@@ -10,6 +10,7 @@ import {
   getWatchlist,
   getResearch, toggleArticleRead, saveArticleNotes,
 } from "@/lib/store";
+import { apiGet, apiPost } from "@/lib/api";
 
 /* ────────── helpers ────────── */
 function cx(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(" "); }
@@ -793,54 +794,144 @@ function StocksWidgets(_: { refresh: () => void }) {
 /* ═══════════════════════════════════════════════════════
    RESEARCH — News + Deep Dive courses
    ═══════════════════════════════════════════════════════ */
-function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; refresh: () => void }) {
-  const [filter, setFilter] = useState<"all" | "world" | "tech" | "cyber" | "deep">("all");
+function ResearchWidgets({ research: localResearch, refresh }: { research: ResearchArticle[]; refresh: () => void }) {
+  const [filter, setFilter] = useState<"all" | "unread" | "saved">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [noteText, setNoteText] = useState<Record<string, string>>({});
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<string | null>(null);
 
-  const categories = [
-    { key: "all" as const, label: "All", icon: "📋" },
-    { key: "world" as const, label: "World", icon: "🌍" },
-    { key: "tech" as const, label: "Tech", icon: "💻" },
-    { key: "cyber" as const, label: "Cyber", icon: "🔒" },
-    { key: "deep" as const, label: "Deep Dive", icon: "🔬" },
-  ];
+  // API-backed items
+  interface ApiItem {
+    id: string; title: string; url: string; source_name?: string;
+    published_at?: string; fetched_at: string; summary?: string;
+    tags_json?: string; is_read: number; is_saved: number;
+  }
+  const [apiItems, setApiItems] = useState<ApiItem[]>([]);
+  const [hasApi, setHasApi] = useState(false);
 
-  const filtered = filter === "all" ? research : research.filter((r) => r.category === filter);
-  const unread = research.filter((r) => !r.read).length;
-  const readCount = research.filter((r) => r.read).length;
+  const loadFeed = useCallback(async (f: string) => {
+    try {
+      const data = await apiGet<{ items: ApiItem[] }>(`/research/feed?filter=${f}&limit=50`);
+      if (data.items && data.items.length >= 0) {
+        setApiItems(data.items);
+        setHasApi(true);
+      }
+    } catch {
+      setHasApi(false);
+    }
+  }, []);
 
-  const catColorMap: Record<string, string> = {
-    world: "indigo",
-    tech: "cyan",
-    cyber: "rose",
-    deep: "amber",
-  };
+  useEffect(() => { loadFeed(filter); }, [filter, loadFeed]);
+
+  async function handleScan() {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const data = await apiPost<{ ok: boolean; newItems?: number; sources?: number; tookMs?: number; error?: string }>("/research/scan", {});
+      if (data.ok) {
+        setScanResult(`Found ${data.newItems || 0} new items from ${data.sources || 0} sources (${data.tookMs || 0}ms)`);
+        loadFeed(filter);
+      } else {
+        setScanResult(data.error || "Scan failed");
+      }
+    } catch (e) {
+      setScanResult(e instanceof Error ? e.message : "Scan failed");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleMarkRead(itemId: string, isRead: boolean) {
+    try {
+      await apiPost(`/research/item/${itemId}/read`, { isRead });
+      loadFeed(filter);
+    } catch {
+      // fallback to local
+      toggleArticleRead(itemId);
+      refresh();
+    }
+  }
+
+  async function handleSaveItem(itemId: string, isSaved: boolean) {
+    try {
+      await apiPost(`/research/item/${itemId}/save`, { isSaved });
+      loadFeed(filter);
+    } catch {
+      // non-fatal
+    }
+  }
+
+  // Merged display: prefer API items, fall back to localStorage
+  const displayItems = hasApi ? apiItems.map((a) => ({
+    id: a.id,
+    title: a.title,
+    url: a.url,
+    source: a.source_name || "",
+    category: "tech" as const,
+    read: a.is_read === 1,
+    saved: a.is_saved === 1,
+    notes: "",
+    summary: a.summary || "",
+    tags: a.tags_json ? JSON.parse(a.tags_json) : [],
+    publishedAt: a.published_at || a.fetched_at,
+  })) : localResearch.map((r) => ({
+    id: r.id,
+    title: r.title,
+    url: r.url || "#",
+    source: r.source,
+    category: r.category,
+    read: r.read,
+    saved: false,
+    notes: r.notes,
+    summary: "",
+    tags: [] as string[],
+    publishedAt: "",
+  }));
+
+  const unread = displayItems.filter((r) => !r.read).length;
+  const readCount = displayItems.filter((r) => r.read).length;
 
   return (
     <div className="space-y-3">
-      {/* Stats */}
+      {/* Stats + Scan */}
       <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="📰" value={research.length} label="Articles" />
+        <StatBox icon="📰" value={displayItems.length} label="Articles" />
         <StatBox icon="📖" value={readCount} label="Read" />
         <StatBox icon="🆕" value={unread} label="Unread" />
       </div>
 
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleScan}
+          disabled={scanning}
+          className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition"
+        >
+          {scanning ? "Scanning…" : "🔍 Scan Now"}
+        </button>
+        {scanResult && <span className="text-[10px] text-zinc-400">{scanResult}</span>}
+      </div>
+
       <AgentStatus verb="researching latest cybersecurity news" />
 
-      {/* Category filter */}
+      {/* Filter tabs: All / Unread / Saved */}
       <div className="flex gap-1 overflow-auto pb-1">
-        {categories.map((c) => (
-          <button key={c.key} onClick={() => setFilter(c.key)} className={cx(
-            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap",
-            filter === c.key ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{c.icon} {c.label}</button>
+        {(["all", "unread", "saved"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
+            filter === f ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f === "all" ? "📋 All" : f === "unread" ? "🆕 Unread" : "💾 Saved"}</button>
         ))}
       </div>
 
       {/* Articles */}
       <div className="space-y-2 max-h-[60vh] overflow-auto">
-        {filtered.map((article) => (
+        {displayItems.length === 0 && (
+          <div className="text-center py-6 text-xs text-zinc-500">
+            {hasApi ? "No articles. Click Scan Now to fetch feeds." : "No articles in local store."}
+          </div>
+        )}
+        {displayItems.map((article) => (
           <div key={article.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
             <button
               onClick={() => setExpanded(expanded === article.id ? null : article.id)}
@@ -853,62 +944,69 @@ function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; r
                 )} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <Badge color={catColorMap[article.category] || "zinc"}>{article.category}</Badge>
+                    {article.tags.slice(0, 2).map((t: string) => (
+                      <Badge key={t} color="indigo">{t}</Badge>
+                    ))}
                     <span className="text-[10px] text-zinc-500">{article.source}</span>
+                    {article.publishedAt && (
+                      <span className="text-[10px] text-zinc-600">{new Date(article.publishedAt).toLocaleDateString()}</span>
+                    )}
                   </div>
-                  <div className={cx("text-xs font-semibold mt-1", article.read ? "text-zinc-400" : "text-white")}>
-                    {article.title}
-                  </div>
+                  <a
+                    href={article.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={cx("text-xs font-semibold mt-1 hover:underline block", article.read ? "text-zinc-400" : "text-white")}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {article.title} ↗
+                  </a>
+                  {article.summary && (
+                    <div className="text-[10px] text-zinc-500 mt-0.5 line-clamp-2">{article.summary}</div>
+                  )}
                 </div>
                 <span className={cx("text-zinc-500 transition-transform shrink-0", expanded === article.id && "rotate-90")}>›</span>
               </div>
             </button>
 
-            {/* Expanded view — course-like deep dive */}
             {expanded === article.id && (
               <div className="px-4 pb-4 space-y-3 animate-fade-in border-t border-white/5 pt-3">
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   <button
-                    onClick={() => { toggleArticleRead(article.id); refresh(); }}
+                    onClick={() => hasApi ? handleMarkRead(article.id, !article.read) : (() => { toggleArticleRead(article.id); refresh(); })()}
                     className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
                       article.read ? "bg-white/5 text-zinc-400" : "bg-indigo-500/20 text-indigo-400"
                     )}
                   >
                     {article.read ? "Mark Unread" : "✓ Mark Read"}
                   </button>
-                  {article.url !== "#" && (
-                    <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
-                      Open Source ↗
-                    </a>
-                  )}
-                </div>
-
-                {/* Notes per article */}
-                <div>
-                  <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
-                  <textarea
-                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-20"
-                    placeholder="Add your thoughts, key takeaways, questions…"
-                    value={noteText[article.id] ?? article.notes}
-                    onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
-                  />
                   <button
-                    onClick={() => {
-                      saveArticleNotes(article.id, noteText[article.id] ?? article.notes);
-                      refresh();
-                    }}
-                    className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                    onClick={() => handleSaveItem(article.id, !article.saved)}
+                    className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
+                      article.saved ? "bg-amber-500/20 text-amber-400" : "bg-white/5 text-zinc-400"
+                    )}
                   >
-                    Save Notes
+                    {article.saved ? "💾 Saved" : "Save"}
                   </button>
+                  <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
+                    Open Source ↗
+                  </a>
                 </div>
 
-                {article.category === "deep" && (
-                  <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/10">
-                    <div className="text-[10px] text-amber-400 font-semibold mb-1">🔬 DEEP DIVE — Course Module</div>
-                    <div className="text-[10px] text-zinc-400">This article is structured as a learning module. Ask your research agent to expand it into a full lesson with exercises.</div>
-                    <button className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
-                      Generate Full Lesson →
+                {!hasApi && (
+                  <div>
+                    <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
+                    <textarea
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-20"
+                      placeholder="Add your thoughts, key takeaways, questions…"
+                      value={noteText[article.id] ?? article.notes}
+                      onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
+                    />
+                    <button
+                      onClick={() => { saveArticleNotes(article.id, noteText[article.id] ?? article.notes); refresh(); }}
+                      className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                    >
+                      Save Notes
                     </button>
                   </div>
                 )}
@@ -921,10 +1019,10 @@ function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; r
       {/* Reading Progress */}
       <Card title="Reading Progress" icon="📊">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-zinc-400">{readCount} of {research.length} articles</span>
-          <span className="text-xs font-semibold text-white">{research.length > 0 ? Math.round((readCount / research.length) * 100) : 0}%</span>
+          <span className="text-xs text-zinc-400">{readCount} of {displayItems.length} articles</span>
+          <span className="text-xs font-semibold text-white">{displayItems.length > 0 ? Math.round((readCount / displayItems.length) * 100) : 0}%</span>
         </div>
-        <ProgressBar value={research.length > 0 ? (readCount / research.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
+        <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
       </Card>
     </div>
   );
