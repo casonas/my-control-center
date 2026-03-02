@@ -56,7 +56,7 @@ function generateICS(events: CalEvent[]): Response {
   for (const ev of events) {
     const dtstart = new Date(ev.start).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
     const dtend = dtstart; // point event
-    const summary = ev.title.replace(/[,;\\]/g, " ");
+    const summary = ev.title.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n").replace(/\r/g, "");
     ics += `BEGIN:VEVENT\r\n`;
     ics += `UID:${ev.id}@mcc\r\n`;
     ics += `DTSTAMP:${now}\r\n`;
