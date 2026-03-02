@@ -1,18 +1,10 @@
 // web/app/api/chat/stream/route.ts
-export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 
-/** Read an env var from process.env first, then Cloudflare bindings. */
+/** Read an env var from process.env. */
 function getEnv(name: string): string | undefined {
-  if (process.env[name]) return process.env[name];
-  try {
-    const val = (getRequestContext().env as Record<string, unknown>)[name];
-    return typeof val === "string" ? val : undefined;
-  } catch {
-    return undefined;
-  }
+  return process.env[name];
 }
 
 export async function POST(req: Request) {

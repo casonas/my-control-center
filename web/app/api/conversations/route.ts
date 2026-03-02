@@ -1,5 +1,4 @@
 // web/app/api/conversations/route.ts
-export const runtime = "edge";
 
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 

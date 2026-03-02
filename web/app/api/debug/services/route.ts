@@ -1,6 +1,4 @@
-export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 
 type EnvLike = Record<string, unknown>;
 
@@ -81,8 +79,7 @@ const CLEANUP_COMMANDS = [
  * 3. Returns cleanup commands the user can copy-paste on the VPS.
  */
 export async function GET() {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+  const e: EnvLike = process.env as unknown as EnvLike;
 
   // Gather VPS endpoint URLs from environment
   const endpoints: { name: string; url: string | null }[] = [

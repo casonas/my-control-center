@@ -3,7 +3,6 @@
 // Works on Cloudflare Pages edge workers AND a plain Node.js VPS.
 // No D1 or getRequestContext() required — uses stateless signed cookies.
 //
-export const runtime = "edge";
 
 import { createSession, verifyPassword } from "@/lib/auth";
 

@@ -1,6 +1,4 @@
-import { getRequestContext } from "@cloudflare/next-on-pages";
 
-export const runtime = "edge";
 
 type EnvLike = Record<string, unknown>;
 
@@ -11,8 +9,7 @@ type D1Like = {
 };
 
 export async function GET() {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+  const e: EnvLike = {};
 
   // Show what bindings exist (safe for debug route; remove later)
   const keys = Object.keys(e);
