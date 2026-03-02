@@ -42,13 +42,21 @@ api.my-control-center.com {
 # ── Bridge Service (SSE streaming) ───────────────────────────────────────────
 bridge.my-control-center.com {
     reverse_proxy localhost:8081 {
-        # Disable response buffering so SSE chunks arrive immediately
+        # Flush every chunk immediately — required for SSE
         flush_interval -1
-        # Strip upstream CORS headers — Caddy sets the authoritative ones below
+        # Strip upstream CORS headers to avoid duplicates (bridge.py sets its own)
         header_down -Access-Control-Allow-Origin
         header_down -Access-Control-Allow-Methods
         header_down -Access-Control-Allow-Headers
     }
+
+    # Prevent compression on SSE so chunks arrive unbuffered.
+    # no-transform stops intermediate proxies (Cloudflare orange cloud) from
+    # gzipping the event stream, which would delay delivery until a full
+    # compression block is filled.
+    @sse path /chat/stream
+    header @sse Cache-Control "no-cache, no-transform"
+    header @sse X-Accel-Buffering "no"
 
     # CORS headers for Cloudflare Pages dashboard
     header {
@@ -63,3 +71,22 @@ bridge.my-control-center.com {
     @preflight method OPTIONS
     respond @preflight 204
 }
+
+# ── Verification ─────────────────────────────────────────────────────────────
+# After deploying, test with these curl commands from any machine:
+#
+# 1. HTTPS works:
+#   curl -I https://api.my-control-center.com/
+#   curl -I https://bridge.my-control-center.com/status
+#
+# 2. CORS allows pages.dev origin:
+#   curl -I -H "Origin: https://my-control-center.pages.dev" \
+#        https://api.my-control-center.com/
+#   # → Access-Control-Allow-Origin: https://my-control-center.pages.dev
+#   # → Access-Control-Allow-Credentials: true
+#
+# 3. SSE streaming doesn't hang (/chat/stream should return chunks immediately):
+#   curl -N -H "Content-Type: application/json" \
+#        -d '{"agentId":"main","message":"ping"}' \
+#        https://bridge.my-control-center.com/chat/stream
+#   # → data: {"text": "...", ...}  (lines appear one by one, not all at once)

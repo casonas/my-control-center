@@ -8,7 +8,7 @@ Browser → Caddy (HTTPS) → Next.js dashboard (port 3000)
                                    ↓ localhost
                           MCC Bridge (port 8081)
                                    ↓ localhost
-                          OpenClaw agents (port 18789)
+                          OpenClaw Gateway (port 18789)
 ```
 
 **Or** host the dashboard on Cloudflare Pages and proxy only the API/bridge
@@ -219,12 +219,18 @@ In Cloudflare DNS, add **A records** pointing to your VPS IP:
 
 | Type | Name     | Content           | Proxy |
 |------|----------|-------------------|-------|
-| A    | api      | YOUR_VPS_IP       | 🟡    |
-| A    | bridge   | YOUR_VPS_IP       | 🟡    |
+| A    | api      | YOUR_VPS_IP       | ⬜ DNS only |
+| A    | bridge   | YOUR_VPS_IP       | ⬜ DNS only |
 
-> **Tip:** Proxied (orange cloud) is fine — Caddy handles SSL behind
-> Cloudflare's edge. See `vps/Caddyfile` for the full configuration
-> including CORS headers, preflight handling, and SSE flush settings.
+> **Start with DNS-only (gray cloud)** so Caddy can provision Let's Encrypt
+> certificates directly. Once HTTPS is confirmed working, you can switch to
+> proxied (orange cloud) for DDoS protection.
+>
+> **If you enable orange cloud:** Cloudflare terminates idle connections
+> after **100 seconds**. The MCC bridge already sends a heartbeat every 30 s,
+> but if you add new SSE endpoints make sure they send a ping/comment line
+> (`: keepalive`) at least every 30 s to prevent Cloudflare from closing
+> the connection.
 
 Set the following environment variables in Cloudflare Pages:
 
@@ -235,8 +241,113 @@ MCC_VPS_HEARTBEAT_URL=https://bridge.my-control-center.com/agents/heartbeat
 MCC_VPS_SCAN_URL=https://bridge.my-control-center.com/agents/scan
 ```
 
+### Verify the deployment
+
+Run these from any machine:
+
+```bash
+# 1. HTTPS works
+curl -I https://api.my-control-center.com/
+curl -I https://bridge.my-control-center.com/status
+
+# 2. CORS allows pages.dev origin
+curl -I -H "Origin: https://my-control-center.pages.dev" \
+     https://api.my-control-center.com/
+# → Access-Control-Allow-Origin: https://my-control-center.pages.dev
+# → Access-Control-Allow-Credentials: true
+
+# 3. SSE streaming doesn't hang (chunks appear one by one, not all at once)
+curl -N -H "Content-Type: application/json" \
+     -d '{"agentId":"main","message":"ping"}' \
+     https://bridge.my-control-center.com/chat/stream
+```
+
 ✅ **Verify:** `https://api.my-control-center.com` and
 `https://bridge.my-control-center.com` both respond with a green padlock.
+
+### Fallback: If Let's Encrypt fails (rate limits)
+
+Let's Encrypt allows **5 duplicate certificates per week** per domain.
+If you hit the rate limit during testing, use one of these alternatives:
+
+**Option A — Use `acme.sh` to provision certificates manually:**
+
+```bash
+# Install acme.sh
+curl https://get.acme.sh | sh -s email=you@example.com
+
+# Issue certs (uses HTTP-01 challenge — ports 80/443 must be open)
+~/.acme.sh/acme.sh --issue -d api.my-control-center.com \
+                            -d bridge.my-control-center.com \
+                            --standalone
+
+# Install certs where Caddy can read them
+~/.acme.sh/acme.sh --install-cert -d api.my-control-center.com \
+  --key-file  /etc/caddy/certs/key.pem \
+  --fullchain-file /etc/caddy/certs/cert.pem \
+  --reloadcmd "sudo systemctl reload caddy"
+```
+
+Then update the Caddyfile to use the manual certs:
+
+```
+api.my-control-center.com {
+    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+    reverse_proxy localhost:18789
+    # ... rest of config unchanged
+}
+```
+
+**Option B — Switch to nginx temporarily:**
+
+```bash
+sudo apt install nginx certbot python3-certbot-nginx
+sudo certbot --nginx -d api.my-control-center.com -d bridge.my-control-center.com
+```
+
+Minimal nginx config (`/etc/nginx/sites-available/mcc`):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name api.my-control-center.com;
+    ssl_certificate     /etc/letsencrypt/live/api.my-control-center.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.my-control-center.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:18789;
+        # CORS
+        add_header Access-Control-Allow-Origin "https://my-control-center.pages.dev" always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token" always;
+        if ($request_method = OPTIONS) { return 204; }
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name bridge.my-control-center.com;
+    ssl_certificate     /etc/letsencrypt/live/bridge.my-control-center.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bridge.my-control-center.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:8081;
+        # SSE: disable buffering
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header X-Accel-Buffering no;
+        # CORS
+        add_header Access-Control-Allow-Origin "https://my-control-center.pages.dev" always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Agent-Id, X-Agent-Session" always;
+        if ($request_method = OPTIONS) { return 204; }
+    }
+}
+```
+
+Switch back to Caddy once the rate limit resets (7 days).
 
 ---
 
