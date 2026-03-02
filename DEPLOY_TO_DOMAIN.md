@@ -405,7 +405,8 @@ Cloudflare will automatically redeploy (if you used GitHub method).
 - Restart tunnel: `sudo systemctl restart cloudflared`
 
 ### Need more help?
-- See [CONNECTING_VPS_AGENTS.md](CONNECTING_VPS_AGENTS.md) for detailed troubleshooting
+- See [OPENCLAW_SETUP_GUIDE.md](OPENCLAW_SETUP_GUIDE.md) for micro-step tunnel troubleshooting with verify/fix for every step
+- See [CONNECTING_VPS_AGENTS.md](CONNECTING_VPS_AGENTS.md) for detailed VPS connection guide
 - Check Cloudflare Pages logs in dashboard
 - Check tunnel logs: `sudo journalctl -u cloudflared -f`
 

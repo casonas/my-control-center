@@ -548,8 +548,10 @@ Once this works:
 
 ---
 
-**Need help?** Open an issue on GitHub with:
-- Your tunnel config (remove sensitive IDs)
-- Cloudflared logs: `sudo journalctl -u cloudflared -n 50`
-- OpenClaw logs (if accessible)
-- The exact error message you're seeing
+**Need help?**
+- See [OPENCLAW_SETUP_GUIDE.md](../OPENCLAW_SETUP_GUIDE.md) for micro-step troubleshooting with verify/fix for every step
+- Open an issue on GitHub with:
+  - Your tunnel config (remove sensitive IDs)
+  - Cloudflared logs: `sudo journalctl -u cloudflared -n 50`
+  - OpenClaw logs (if accessible)
+  - The exact error message you're seeing
