@@ -1,8 +1,15 @@
 export const runtime = "edge";
 
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getSession } from "@/lib/auth";
 
-type EnvLike = Record<string, unknown>;
+function getD1(): D1Like | undefined {
+  try {
+    return (getRequestContext().env as Record<string, unknown>)["DB"] as D1Like | undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type D1Stmt = {
   bind: (...args: unknown[]) => D1Stmt;
@@ -14,39 +21,8 @@ type D1Like = {
   prepare: (sql: string) => D1Stmt;
 };
 
-type Session = { sessionId: string; userId: string };
-
 function json(status: number, body: Record<string, unknown>) {
   return Response.json(body, { status });
-}
-
-function getCookie(req: Request, name: string): string | null {
-  const cookie = req.headers.get("cookie") || "";
-  for (const part of cookie.split(";")) {
-    const [k, ...v] = part.trim().split("=");
-    if (k === name) return decodeURIComponent(v.join("=") || "");
-  }
-  return null;
-}
-
-async function requireSession(req: Request, DB: D1Like): Promise<Session | null> {
-  const sessionId = getCookie(req, "mcc_session");
-  if (!sessionId) return null;
-
-  const row = await DB.prepare(
-    `
-    SELECT s.id as session_id, s.user_id as user_id
-    FROM sessions s
-    WHERE s.id = ?
-      AND s.expires_at > datetime('now')
-    LIMIT 1
-    `
-  )
-    .bind(sessionId)
-    .first<{ session_id: string; user_id: string }>();
-
-  if (!row) return null;
-  return { sessionId: row.session_id, userId: row.user_id };
 }
 
 function randomId(bytes = 16) {
@@ -88,13 +64,7 @@ export async function POST(
   const requestId = crypto.randomUUID();
 
   try {
-    const { env } = getRequestContext();
-    const e = env as EnvLike;
-
-    const DB = e["DB"] as unknown as D1Like | undefined;
-    if (!DB) return json(500, { ok: false, requestId, error: "DB missing" });
-
-    const sess = await requireSession(req, DB);
+    const sess = await getSession();
     if (!sess) return json(401, { ok: false, requestId, error: "Unauthorized" });
 
     const { agentId } = await ctx.params;
@@ -111,15 +81,18 @@ export async function POST(
     const runId = `run_${randomId(12)}`;
     const prompt = toPrompt(body.payload);
 
-    // Insert using your CURRENT schema for agent_runs
-    await DB.prepare(
-      `
-      INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
-      VALUES (?, ?, ?, ?, 'queued', datetime('now'))
-      `
-    )
-      .bind(runId, sess.userId, agentId, prompt)
-      .run();
+    // Insert into D1 if available; skip gracefully on plain VPS
+    const DB = getD1();
+    if (DB) {
+      await DB.prepare(
+        `
+        INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
+        VALUES (?, ?, ?, ?, 'queued', datetime('now'))
+        `
+      )
+        .bind(runId, sess.userId, agentId, prompt)
+        .run();
+    }
 
     return json(200, {
       ok: true,

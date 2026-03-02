@@ -4,16 +4,22 @@ export const runtime = "edge";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 
-type EnvLike = Record<string, unknown>;
+/** Read an env var from process.env first, then Cloudflare bindings. */
+function getEnv(name: string): string | undefined {
+  if (process.env[name]) return process.env[name];
+  try {
+    const val = (getRequestContext().env as Record<string, unknown>)[name];
+    return typeof val === "string" ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function POST(req: Request) {
   return withMutatingAuth(req, async () => {
-    const { env } = getRequestContext();
-    const e = env as EnvLike;
-
-    const upstream = e["MCC_VPS_SSE_URL"];
-    if (typeof upstream !== "string" || !upstream) {
-      return Response.json({ ok: false, error: "MCC_VPS_SSE_URL missing" }, { status: 500 });
+    const upstream = getEnv("MCC_VPS_SSE_URL");
+    if (!upstream) {
+      return Response.json({ ok: false, error: "MCC_VPS_SSE_URL not configured — set it in .env.local (VPS) or wrangler.toml (Cloudflare)" }, { status: 500 });
     }
 
     // Pass body through raw — zero parse overhead for Telegram-speed latency

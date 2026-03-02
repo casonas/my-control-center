@@ -1,31 +1,15 @@
 // web/lib/mutatingAuth.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-
-type Env = {
-  DB: D1Like;
-  /**
-   * Optional: comma-separated origins
-   * Example:
-   * MCC_ALLOWED_ORIGINS="https://my-control-center.pages.dev,https://dashboard.my-control-center.com,http://localhost:3000"
-   */
-  MCC_ALLOWED_ORIGINS?: string;
-};
-
-// Minimal shape of Cloudflare D1 used by this helper (no global D1Database type needed)
-type D1Like = {
-  prepare: (sql: string) => {
-    bind: (...args: unknown[]) => {
-      first: <T = unknown>() => Promise<T | null>;
-      run: () => Promise<unknown>;
-    };
-  };
-};
+//
+// Stateless auth — works on Cloudflare Pages edge workers AND a plain
+// Node.js VPS (npm start).  No D1 or getRequestContext() required.
+//
+import { getSession } from "@/lib/auth";
 
 export type SessionRow = {
   id: string;
   user_id: string;
   csrf_token: string;
-  expires_at: string; // ISO string preferred
+  expires_at: string;
 };
 
 class HttpError extends Error {
@@ -40,44 +24,30 @@ function jsonError(status: number, message: string) {
   return Response.json({ error: message }, { status });
 }
 
-function getCookie(req: Request, name: string): string | null {
-  const cookie = req.headers.get("cookie");
-  if (!cookie) return null;
-
-  const parts = cookie.split(";").map((p) => p.trim());
-  for (const part of parts) {
-    if (part.startsWith(name + "=")) {
-      return decodeURIComponent(part.slice(name.length + 1));
-    }
-  }
-  return null;
-}
-
 function normalizeOrigin(origin: string) {
   try {
     const u = new URL(origin);
-    return `${u.protocol}//${u.host}`; // drop path/query
+    return `${u.protocol}//${u.host}`;
   } catch {
     return "";
   }
 }
 
-function buildAllowedOrigins(env: Env, req: Request): Set<string> {
+function buildAllowedOrigins(req: Request): Set<string> {
   const allowed = new Set<string>();
 
-  // Explicit allowlist (if provided)
-  if (env.MCC_ALLOWED_ORIGINS) {
-    for (const raw of env.MCC_ALLOWED_ORIGINS.split(",")) {
-      const o = normalizeOrigin(raw.trim());
-      if (o) allowed.add(o);
-    }
+  // Explicit allowlist from env (works on both Cloudflare [vars] and VPS .env.local)
+  const explicit = process.env.MCC_ALLOWED_ORIGINS ?? "";
+  for (const raw of explicit.split(",")) {
+    const o = normalizeOrigin(raw.trim());
+    if (o) allowed.add(o);
   }
 
-  // Local dev
+  // Local dev defaults
   allowed.add("http://localhost:3000");
   allowed.add("http://127.0.0.1:3000");
 
-  // Same-origin based on request host (covers pages.dev + your custom domain once repointed)
+  // Same-origin (covers pages.dev, custom domain, VPS hostname)
   const host = req.headers.get("host");
   if (host) {
     allowed.add(`https://${host}`);
@@ -87,69 +57,36 @@ function buildAllowedOrigins(env: Env, req: Request): Set<string> {
   return allowed;
 }
 
-function requireOriginAllowed(req: Request, env: Env) {
+function requireOriginAllowed(req: Request) {
   const origin = req.headers.get("origin");
   if (!origin) throw new HttpError(403, "Missing Origin header");
-
   const normalized = normalizeOrigin(origin);
   if (!normalized) throw new HttpError(403, "Invalid Origin header");
-
-  const allowed = buildAllowedOrigins(env, req);
-  if (!allowed.has(normalized)) {
-    throw new HttpError(403, `Origin not allowed: ${normalized}`);
-  }
-}
-
-async function requireSession(req: Request, env: Env): Promise<SessionRow> {
-  const sessionId = getCookie(req, "mcc_session");
-  if (!sessionId) throw new HttpError(401, "Missing session cookie");
-
-  const row = await env.DB.prepare(
-    `SELECT id, user_id, csrf_token, expires_at
-     FROM sessions
-     WHERE id = ?1
-     LIMIT 1`
-  )
-    .bind(sessionId)
-    .first<SessionRow>();
-
-  if (!row) throw new HttpError(401, "Invalid session");
-
-  const exp = new Date(row.expires_at).getTime();
-  if (Number.isFinite(exp) && exp <= Date.now()) {
-    throw new HttpError(401, "Session expired");
-  }
-
-  return row;
-}
-
-function requireCsrf(req: Request, session: SessionRow) {
-  const csrf = req.headers.get("x-csrf");
-  if (!csrf) throw new HttpError(403, "Missing X-CSRF header");
-  if (csrf !== session.csrf_token) throw new HttpError(403, "Invalid CSRF token");
+  const allowed = buildAllowedOrigins(req);
+  if (!allowed.has(normalized)) throw new HttpError(403, `Origin not allowed: ${normalized}`);
 }
 
 /**
- * Enforces: Origin allowlist + session cookie + X-CSRF match.
- * Use only on POST/PUT/PATCH/DELETE routes.
+ * Enforces: Origin allowlist + signed session cookie + X-CSRF match.
+ * Uses stateless signed cookies — no database required.
  */
-export async function requireMutatingAuth(req: Request) {
-  const { env } = getRequestContext();
-  const e = env as Record<string, unknown>;
+export async function requireMutatingAuth(req: Request): Promise<{ session: SessionRow }> {
+  requireOriginAllowed(req);
 
-  const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) throw new HttpError(500, "DB binding missing");
+  const session = await getSession();
+  if (!session) throw new HttpError(401, "Missing or invalid session");
 
-  const allowed = e["MCC_ALLOWED_ORIGINS"];
-  const MCC_ALLOWED_ORIGINS = typeof allowed === "string" ? allowed : undefined;
+  const csrf = req.headers.get("x-csrf");
+  if (!csrf || csrf !== session.csrfToken) throw new HttpError(403, "Invalid CSRF token");
 
-  const typedEnv: Env = { DB, MCC_ALLOWED_ORIGINS };
-
-  requireOriginAllowed(req, typedEnv);
-  const session = await requireSession(req, typedEnv);
-  requireCsrf(req, session);
-
-  return { env: typedEnv, session };
+  return {
+    session: {
+      id: "stateless",
+      user_id: session.userId,
+      csrf_token: session.csrfToken,
+      expires_at: new Date(session.expiresAt).toISOString(),
+    },
+  };
 }
 
 /**
@@ -157,7 +94,7 @@ export async function requireMutatingAuth(req: Request) {
  */
 export async function withMutatingAuth(
   req: Request,
-  handler: (ctx: { env: Env; session: SessionRow }) => Promise<Response>
+  handler: (ctx: { session: SessionRow }) => Promise<Response>
 ) {
   try {
     const ctx = await requireMutatingAuth(req);
