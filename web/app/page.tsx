@@ -316,6 +316,14 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  /* ─── Add Agent Dialog ─── */
+  const [newAgentId, setNewAgentId] = useState("");
+  const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentEmoji, setNewAgentEmoji] = useState("🤖");
+  const [newAgentModel, setNewAgentModel] = useState("");
+  const [newAgentParent, setNewAgentParent] = useState("");
+  const [newAgentDesc, setNewAgentDesc] = useState("");
+
   /* ─── Notes helpers ─── */
   const allNotes = useMemo(() => getNotes(), [notesTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const filteredNotes = (notesFilter === "all" ? allNotes : allNotes.filter((n) => n.tab === notesFilter))
@@ -906,31 +914,24 @@ export default function Home() {
      ADD AGENT DIALOG
      ═══════════════════════════════════════════════════ */
   function AddAgentDialog() {
-    const [newId, setNewId] = useState("");
-    const [newName, setNewName] = useState("");
-    const [newEmoji, setNewEmoji] = useState("🤖");
-    const [newModel, setNewModel] = useState("");
-    const [newParent, setNewParent] = useState("");
-    const [newDesc, setNewDesc] = useState("");
-
     if (!addAgentOpen) return null;
 
     function handleAdd() {
-      if (!newId.trim() || !newName.trim()) return;
+      if (!newAgentId.trim() || !newAgentName.trim()) return;
       const agent = addAgentToRegistry({
-        id: newId.trim(),
-        name: newName.trim(),
-        emoji: newEmoji || "🤖",
-        model: newModel || undefined,
-        parentId: newParent || null,
-        description: newDesc || undefined,
+        id: newAgentId.trim(),
+        name: newAgentName.trim(),
+        emoji: newAgentEmoji || "🤖",
+        model: newAgentModel || undefined,
+        parentId: newAgentParent || null,
+        description: newAgentDesc || undefined,
         capabilities: [],
       });
       setAgents((prev) => [...prev, agent]);
       // Connect the new agent immediately — no cold start
       connectAll([agent]);
       setAddAgentOpen(false);
-      setNewId(""); setNewName(""); setNewEmoji("🤖"); setNewModel(""); setNewParent(""); setNewDesc("");
+      setNewAgentId(""); setNewAgentName(""); setNewAgentEmoji("🤖"); setNewAgentModel(""); setNewAgentParent(""); setNewAgentDesc("");
     }
 
     return (
@@ -940,21 +941,21 @@ export default function Home() {
           <div className="glass rounded-2xl overflow-hidden border border-white/10 shadow-2xl p-5 space-y-3">
             <h2 className="text-sm font-bold text-white flex items-center gap-2">➕ Add Agent</h2>
             <div className="grid grid-cols-[48px_1fr] gap-2">
-              <input className="rounded-lg bg-white/5 border border-white/10 px-2 py-2 text-center text-sm text-white outline-none" placeholder="🤖" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={4} />
-              <input className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Agent name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+              <input className="rounded-lg bg-white/5 border border-white/10 px-2 py-2 text-center text-sm text-white outline-none" placeholder="🤖" value={newAgentEmoji} onChange={(e) => setNewAgentEmoji(e.target.value)} maxLength={4} />
+              <input className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Agent name" value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} />
             </div>
-            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Unique ID (e.g. research-agent)" value={newId} onChange={(e) => setNewId(e.target.value)} />
-            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Model (e.g. openai-codex/gpt-5.3-codex)" value={newModel} onChange={(e) => setNewModel(e.target.value)} />
-            <select className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-zinc-400 outline-none" value={newParent} onChange={(e) => setNewParent(e.target.value)}>
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Unique ID (e.g. research-agent)" value={newAgentId} onChange={(e) => setNewAgentId(e.target.value)} />
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Model (e.g. openai-codex/gpt-5.3-codex)" value={newAgentModel} onChange={(e) => setNewAgentModel(e.target.value)} />
+            <select className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-zinc-400 outline-none" value={newAgentParent} onChange={(e) => setNewAgentParent(e.target.value)}>
               <option value="">No parent (top-level agent)</option>
               {agents.filter((a) => !a.parentId).map((a) => (
                 <option key={a.id} value={a.id}>{a.emoji} {a.name} (sub-agent of)</option>
               ))}
             </select>
-            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Description (optional)" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} />
+            <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Description (optional)" value={newAgentDesc} onChange={(e) => setNewAgentDesc(e.target.value)} />
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={() => setAddAgentOpen(false)} className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white transition">Cancel</button>
-              <button onClick={handleAdd} disabled={!newId.trim() || !newName.trim()} className="px-4 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-30 transition">Add Agent</button>
+              <button onClick={handleAdd} disabled={!newAgentId.trim() || !newAgentName.trim()} className="px-4 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-30 transition">Add Agent</button>
             </div>
           </div>
         </div>
