@@ -208,11 +208,20 @@ sudo apt update && sudo apt install caddy
 # Deploy the Caddyfile — serves api + bridge subdomains with CORS & SSE support
 sudo cp ~/my-control-center/vps/Caddyfile /etc/caddy/Caddyfile
 
-# Open HTTPS port and start
+# Validate the config before reloading
+sudo caddy validate --config /etc/caddy/Caddyfile
+
+# Make sure ports 80/443 are open for HTTPS + ACME challenges
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+sudo ufw reload
+
+# Start Caddy (or reload if already running)
 sudo systemctl enable --now caddy
 sudo systemctl reload caddy
+
+# If something goes wrong, check the logs
+# sudo journalctl -u caddy -f
 ```
 
 In Cloudflare DNS, add **A records** pointing to your VPS IP:
@@ -276,16 +285,23 @@ If you hit the rate limit during testing, use one of these alternatives:
 # Install acme.sh
 curl https://get.acme.sh | sh -s email=you@example.com
 
-# Issue certs (uses HTTP-01 challenge — ports 80/443 must be open)
+# Stop Caddy first — standalone mode needs ports 80/443 free
+sudo systemctl stop caddy
+
+# Issue certs (uses HTTP-01 challenge on port 80)
 ~/.acme.sh/acme.sh --issue -d api.my-control-center.com \
                             -d bridge.my-control-center.com \
                             --standalone
 
 # Install certs where Caddy can read them
+sudo mkdir -p /etc/caddy/certs
 ~/.acme.sh/acme.sh --install-cert -d api.my-control-center.com \
   --key-file  /etc/caddy/certs/key.pem \
   --fullchain-file /etc/caddy/certs/cert.pem \
   --reloadcmd "sudo systemctl reload caddy"
+
+# Restart Caddy with the new certs
+sudo systemctl start caddy
 ```
 
 Then update the Caddyfile to use the manual certs:

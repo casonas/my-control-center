@@ -108,28 +108,38 @@ rm -f "$SSE_TMPFILE"
 
 echo ""
 echo "=== 5. Long-lived SSE (>100 s timeout check) ==="
-echo "   Sending a request and waiting 120 s to verify no premature cutoff."
+echo "   Keeping an SSE connection open for 120 s to verify no premature cutoff."
 echo "   (Skip with Ctrl+C if you only need quick checks.)"
 
 LONG_TMPFILE=$(mktemp)
+# Use 'timeout' to enforce a hard 120 s wall clock.  If the connection is
+# still alive at 120 s, timeout kills curl with exit code 124 — that's a pass.
+# If curl exits on its own before 100 s (exit 0 from a natural "done" event
+# is OK; anything else means the stream was cut).
 START_TS=$(date +%s)
-curl -sS -N --max-time 130 \
+timeout 120 curl -sS -N \
     -H "Content-Type: application/json" \
     -H "Origin: ${ORIGIN}" \
-    -d '{"agentId":"main","message":"Tell me a very long story"}' \
+    -d '{"agentId":"main","message":"stream test keepalive"}' \
     "https://${BRIDGE_HOST}/chat/stream" \
-    >"$LONG_TMPFILE" 2>/dev/null || true
+    >"$LONG_TMPFILE" 2>/dev/null
+CURL_EXIT=$?
 END_TS=$(date +%s)
 ELAPSED=$((END_TS - START_TS))
 
-# If the connection lasted at least 100 s OR the stream completed naturally
-# with a "done" event before 100 s, there's no premature cutoff.
+# exit 124 = timeout killed curl after 120 s (connection stayed open — pass)
+# exit 0   = stream finished naturally with a "done" event (pass)
+# anything else before 100 s = premature cutoff (fail)
 DONE_EVENT=$(grep -c "^event: done" "$LONG_TMPFILE" 2>/dev/null || echo 0)
 
-if [ "$ELAPSED" -ge 100 ] || [ "$DONE_EVENT" -gt 0 ]; then
-    check "No premature cutoff (${ELAPSED}s elapsed, done_events=${DONE_EVENT})" true
+if [ "$CURL_EXIT" -eq 124 ]; then
+    check "SSE stayed open for full 120 s (timeout killed curl — pass)" true
+elif [ "$DONE_EVENT" -gt 0 ]; then
+    check "SSE completed naturally with done event after ${ELAPSED}s (pass)" true
+elif [ "$ELAPSED" -ge 100 ]; then
+    check "SSE lasted ${ELAPSED}s (≥100 s — no premature cutoff)" true
 else
-    check "No premature cutoff (${ELAPSED}s elapsed — connection dropped early)" false
+    check "SSE died after only ${ELAPSED}s (expected ≥100 s or done event)" false
 fi
 
 rm -f "$LONG_TMPFILE"
