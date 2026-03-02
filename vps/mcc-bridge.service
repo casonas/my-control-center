@@ -1,0 +1,47 @@
+# MCC Bridge — systemd service unit
+#
+# Install:
+#   sudo cp mcc-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcc-bridge
+#
+# Logs:
+#   journalctl -u mcc-bridge -f
+
+[Unit]
+Description=MCC My Control Center Bridge (port 8081)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+WorkingDirectory=/home/openclaw/.openclaw
+
+# Absolute path to Python — avoids PATH issues in background
+ExecStart=/usr/bin/python3 /home/openclaw/my-control-center/vps/bridge.py
+
+# Watchdog: restart automatically on crash, with 5-second cooldown
+Restart=always
+RestartSec=5
+
+# Environment
+Environment=MCC_PORT=8081
+Environment=MCC_AGENTS_DIR=/home/openclaw/.openclaw/agents
+Environment=MCC_NODE_BIN=/usr/bin/node
+Environment=MCC_OPENCLAW_BIN=/usr/lib/node_modules/openclaw/openclaw.mjs
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/openclaw/.openclaw
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcc-bridge
+
+[Install]
+WantedBy=multi-user.target

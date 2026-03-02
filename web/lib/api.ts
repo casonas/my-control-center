@@ -233,7 +233,7 @@ export async function streamChat(
       onEvent?.(event, data);
 
       if (
-        event === "delta" &&
+        (event === "delta" || event === "message") &&
         typeof data === "object" &&
         data !== null &&
         "text" in data &&

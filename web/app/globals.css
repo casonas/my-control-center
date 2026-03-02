@@ -6,6 +6,7 @@
   --card: #0a0a0f;
   --card-border: #1a1a2e;
   --accent-glow: rgba(99, 102, 241, 0.15);
+  --theme-accent: #6366f1;
 }
 
 @theme inline {

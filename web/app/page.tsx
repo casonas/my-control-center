@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
 import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
@@ -25,6 +25,90 @@ const glowMap: Record<string, string> = {
   skills: "glow-amber", sports: "glow-rose", stocks: "glow-lime", research: "glow-indigo",
   notes: "glow-teal", settings: "glow-zinc",
 };
+
+/* ─────────────────────────────────────────────────────
+   THEME HINT COLORS — maps [THEME:*] tags to CSS vars
+   ───────────────────────────────────────────────────── */
+const THEME_COLORS: Record<string, string> = {
+  ORANGE: "#f97316",   // Knicks
+  BLUE: "#0078d0",     // Chargers / Tottenham
+  GARNET: "#73000a",   // Gamecocks
+  BROWN: "#2f241d",    // Padres
+  RED: "#ef4444",
+  GREEN: "#22c55e",
+  PURPLE: "#a855f7",
+  CYAN: "#06b6d4",
+  DEFAULT: "#6366f1",
+};
+
+/* ─────────────────────────────────────────────────────
+   MessageInput — Decoupled from parent state so typing
+   does NOT re-render the entire chat/dashboard.
+   ───────────────────────────────────────────────────── */
+const MessageInput = React.memo(function MessageInput({
+  onSend,
+  busy,
+  placeholder,
+  gradient,
+  suggestedText,
+  onSuggestionConsumed,
+}: {
+  onSend: (text: string) => void;
+  busy: boolean;
+  placeholder: string;
+  gradient: string;
+  suggestedText: string;
+  onSuggestionConsumed: () => void;
+}) {
+  const [text, setText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // "Adjusting state during render" pattern — avoids useEffect + setState lint error.
+  // React re-renders once more with the new text; no cascading effects.
+  const [prevSuggested, setPrevSuggested] = useState("");
+  if (suggestedText && suggestedText !== prevSuggested) {
+    setPrevSuggested(suggestedText);
+    setText(suggestedText);
+    onSuggestionConsumed();
+  }
+
+  // Focus input after suggestion is applied
+  useEffect(() => {
+    if (text && inputRef.current && document.activeElement !== inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [text]);
+
+  function handleSend() {
+    if (!text.trim() || busy) return;
+    onSend(text.trim());
+    setText("");
+  }
+
+  return (
+    <div className="p-3 border-t border-white/5 flex gap-2">
+      <input
+        ref={inputRef}
+        className="flex-1 rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5 outline-none text-sm text-white placeholder-zinc-500 focus:border-indigo-500/30 transition"
+        placeholder={placeholder}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+        disabled={busy}
+      />
+      <button
+        className={cx(
+          "rounded-xl px-4 py-2.5 font-semibold text-sm transition-all disabled:opacity-30",
+          `bg-gradient-to-r ${gradient} text-white shadow-lg`
+        )}
+        disabled={busy || !text.trim()}
+        onClick={handleSend}
+      >
+        {busy ? "…" : "Send"}
+      </button>
+    </div>
+  );
+});
 
 export default function Home() {
   /* ─── Auth ─── */
@@ -51,10 +135,14 @@ export default function Home() {
   /* ─── Chat ─── */
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [text, setText] = useState("");
+  const [suggestedText, setSuggestedText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [themeAccent, setThemeAccent] = useState(THEME_COLORS.DEFAULT);
+
+  // Per-agent message cache — survives agent switching
+  const chatCacheRef = useRef<Record<string, { msgs: Msg[]; convId: string | null }>>({});
 
   /* ─── Notes ─── */
   const [notesTick, setNotesTick] = useState(0);
@@ -112,21 +200,39 @@ export default function Home() {
   useEffect(() => { refreshAuthAndBootstrap(); return () => { disconnectAll(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function newConversation(agentId: string) {
+    // Check cache first — restore old messages if the user is switching back
+    const cached = chatCacheRef.current[agentId];
+    if (cached) {
+      setConversationId(cached.convId);
+      setMessages(cached.msgs);
+      return;
+    }
     const data = await apiPost<{ conversationId: string }>("/conversations", { agentId, title: `${agentId} chat` });
     setConversationId(data.conversationId);
     setMessages([]);
   }
 
+  // Save current chat to cache before switching agents
+  const prevAgentRef = useRef(activeAgentId);
   useEffect(() => {
     if (!authed || !agents.length) return;
+    // Save outgoing agent's messages to cache
+    const prev = prevAgentRef.current;
+    if (prev !== activeAgentId) {
+      chatCacheRef.current[prev] = { msgs: messages, convId: conversationId };
+      prevAgentRef.current = activeAgentId;
+    }
     newConversation(activeAgentId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [activeAgentId, authed, agents.length]);
+  }, [activeAgentId, authed, agents.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function send() {
-    if (!conversationId || !text.trim() || busy) return;
+  // Keep cache in sync as messages stream in
+  useEffect(() => {
+    chatCacheRef.current[activeAgentId] = { msgs: messages, convId: conversationId };
+  }, [messages, conversationId, activeAgentId]);
+
+  async function send(userText: string) {
+    if (!conversationId || !userText || busy) return;
     setError(null);
-    const userText = text.trim();
-    setText("");
 
     // In collab mode, tag which agents should respond
     const respondingAgents = collabMode && collabAgentIds.size > 0
@@ -147,12 +253,25 @@ export default function Home() {
           collaborators: respondingAgents.length > 1 ? respondingAgents : undefined,
         },
         (delta) => {
-          setMessages((m) => {
-            const copy = [...m];
-            const last = copy[copy.length - 1];
-            if (last?.role === "agent") last.content += delta;
-            return copy;
-          });
+          // Parse [THEME:*] UI-Hints from agent output
+          const themeMatch = delta.match(/\[THEME:(\w+)\]/);
+          if (themeMatch) {
+            const key = themeMatch[1].toUpperCase();
+            if (THEME_COLORS[key]) {
+              setThemeAccent(THEME_COLORS[key]);
+              document.documentElement.style.setProperty("--accent-glow", THEME_COLORS[key]);
+            }
+          }
+          // Strip theme tags from visible content
+          const clean = delta.replace(/\[THEME:\w+\]/g, "");
+          if (clean) {
+            setMessages((m) => {
+              const copy = [...m];
+              const last = copy[copy.length - 1];
+              if (last?.role === "agent") last.content += clean;
+              return copy;
+            });
+          }
         },
         undefined,
         {
@@ -173,6 +292,8 @@ export default function Home() {
       setAuthed(false); setAgents([]); setConversationId(null); setMessages([]);
     }
   }
+
+  const clearSuggestion = useCallback(() => setSuggestedText(""), []);
 
   // Auto-scroll chat
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -474,8 +595,8 @@ export default function Home() {
         { text: "Quiz me", prompt: "Give me 5 practice questions on cybersecurity fundamentals." },
       ],
       sports: [
-        { text: "Today's scores", prompt: "What are today's NBA scores and notable highlights?" },
-        { text: "Game predictions", prompt: "Give me predictions and analysis for today's games." },
+        { text: "My teams today", prompt: "Check scores and updates for the Knicks (NBA), Chargers (NFL), Tottenham (EPL), Gamecocks (NCAA), and Padres (MLB). What's happening today?" },
+        { text: "Game predictions", prompt: "Give me predictions and analysis for today's Knicks, Chargers, Tottenham, Gamecocks, and Padres games." },
       ],
       stocks: [
         { text: "Market analysis", prompt: "Give me a brief analysis of today's market movements and cybersecurity stock performance." },
@@ -533,7 +654,7 @@ export default function Home() {
                   <button
                     key={s.text}
                     className="text-left rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 px-3 py-2.5 text-xs text-zinc-300 transition"
-                    onClick={() => setText(s.prompt)}
+                    onClick={() => setSuggestedText(s.prompt)}
                   >
                     {s.text}
                   </button>
@@ -569,27 +690,15 @@ export default function Home() {
           <div ref={chatEndRef} />
         </div>
 
-        {/* Input */}
-        <div className="p-3 border-t border-white/5 flex gap-2">
-          <input
-            className="flex-1 rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5 outline-none text-sm text-white placeholder-zinc-500 focus:border-indigo-500/30 transition"
-            placeholder={`Message ${activeAgent?.name || "agent"}…`}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            disabled={busy}
-          />
-          <button
-            className={cx(
-              "rounded-xl px-4 py-2.5 font-semibold text-sm transition-all disabled:opacity-30",
-              `bg-gradient-to-r ${tabMeta.gradient} text-white shadow-lg`
-            )}
-            disabled={busy || !text.trim()}
-            onClick={send}
-          >
-            {busy ? "…" : "Send"}
-          </button>
-        </div>
+        {/* Input — decoupled from parent state to prevent typing lag */}
+        <MessageInput
+          onSend={send}
+          busy={busy}
+          placeholder={`Message ${activeAgent?.name || "agent"}…`}
+          gradient={tabMeta.gradient}
+          suggestedText={suggestedText}
+          onSuggestionConsumed={clearSuggestion}
+        />
       </section>
     );
   }
@@ -877,16 +986,16 @@ export default function Home() {
 
   // Main dashboard
   return (
-    <main className="min-h-screen bg-[#050507] text-white">
-      <Header />
+    <main className="min-h-screen bg-[#050507] text-white" style={{ "--theme-accent": themeAccent } as React.CSSProperties}>
+      {Header()}
 
       <div className="mx-auto max-w-[1600px] flex">
-        <Sidebar />
+        {Sidebar()}
 
         <div className="flex-1 p-3 md:p-4 min-w-0">
           {/* Desktop: side-by-side layout */}
           <div className="hidden md:grid md:grid-cols-[1fr_420px] gap-4">
-            <ChatPanel />
+            {ChatPanel()}
             <div className="space-y-3 overflow-auto max-h-[calc(100vh-90px)] pb-4">
               <WidgetPanel activeTab={activeTab} />
             </div>
@@ -895,7 +1004,7 @@ export default function Home() {
           {/* Mobile: stacked with chat toggle */}
           <div className="md:hidden space-y-3">
             {!mobileChatOpen && <WidgetPanel activeTab={activeTab} />}
-            {mobileChatOpen && <ChatPanel />}
+            {mobileChatOpen && ChatPanel()}
           </div>
         </div>
       </div>
@@ -913,9 +1022,9 @@ export default function Home() {
       </button>
 
       {/* Overlays */}
-      <CommandPalette />
-      <NotesDrawer />
-      <AddAgentDialog />
+      {CommandPalette()}
+      {NotesDrawer()}
+      {AddAgentDialog()}
     </main>
   );
 }

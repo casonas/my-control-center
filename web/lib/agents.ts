@@ -32,8 +32,9 @@ export const BUILTIN_AGENTS: Agent[] = [
     model: "openai-codex/gpt-5.3-codex",
     workspace: "~/.openclaw/agents/sports/agent",
     agentDir: "~/.openclaw/agents/sports/agent",
-    description: "Scores, stats, projections & game analysis",
-    capabilities: ["scores", "stats", "projections", "game-analysis", "player-research", "web-search"],
+    description: "Scores, stats & analysis — Knicks (NBA), Chargers (NFL), Tottenham (EPL), Gamecocks (NCAA), Padres (MLB)",
+    capabilities: ["scores", "stats", "projections", "game-analysis", "player-research", "web-search",
+      "knicks", "chargers", "tottenham", "gamecocks", "padres"],
     status: "online",
   },
   {
