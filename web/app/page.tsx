@@ -392,10 +392,35 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Search handler
+  // Search handler — tries API (D1) first, falls back to localStorage
   useEffect(() => {
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    const timer = setTimeout(() => setSearchResults(searchAll(searchQuery, 15)), 200);
+    const timer = setTimeout(async () => {
+      try {
+        const data = await apiGet<{ results: Record<string, { id: string; title: string; preview: string; type: string }[]> }>(`/search?q=${encodeURIComponent(searchQuery)}`);
+        const apiResults: Doc[] = [];
+        for (const [collection, items] of Object.entries(data.results || {})) {
+          for (const item of items) {
+            apiResults.push({
+              id: item.id,
+              collection,
+              searchText: `${item.title} ${item.preview}`,
+              tags: [item.type],
+              meta: item,
+              createdAt: "",
+              updatedAt: "",
+            });
+          }
+        }
+        if (apiResults.length > 0) {
+          setSearchResults(apiResults);
+          return;
+        }
+      } catch {
+        // D1/API not available — fall through to localStorage
+      }
+      setSearchResults(searchAll(searchQuery, 15));
+    }, 250);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
@@ -527,12 +552,6 @@ export default function Home() {
       disconnected: "bg-zinc-600",
     };
 
-    async function triggerScan(agentId: string) {
-      try {
-        await apiPost("/agents/scan", { agentId, scope: "all" });
-      } catch { /* ignore */ }
-    }
-
     return (
       <aside className={cx(
         "md:sticky md:top-[72px] md:h-[calc(100vh-72px)] md:block",
@@ -653,11 +672,11 @@ export default function Home() {
           <div className="glass-light rounded-2xl p-3">
             <div className="text-xs font-semibold text-zinc-100 mb-2">⚡ Quick Actions</div>
             <div className="space-y-1">
-              <button onClick={() => { if (activeAgent) triggerScan(activeAgent.id); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
-              <button onClick={() => setNotesOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
+              <button onClick={() => { handleSwitchTab("research"); apiPost("/research/scan", {}).catch(() => {}); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
+              <button onClick={() => { handleSwitchTab("notes"); setNotesOpen(true); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
               <button onClick={() => setSearchOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🔍 Search Everything</button>
-              <button onClick={() => handleSwitchTab("skills")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
-              <button onClick={() => handleSwitchTab("jobs")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
+              <button onClick={() => { handleSwitchTab("skills"); setTimeout(() => document.getElementById("skills-continue")?.scrollIntoView({ behavior: "smooth" }), 100); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
+              <button onClick={() => { handleSwitchTab("jobs"); apiPost("/jobs/refresh", {}).catch(() => {}); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
             </div>
           </div>
         </div>
@@ -867,21 +886,25 @@ export default function Home() {
               {searchResults.length === 0 && !searchQuery && (
                 <div className="py-8 text-center text-xs text-zinc-500">Type to search across all your data</div>
               )}
-              {searchResults.map((doc) => (
+              {searchResults.map((doc) => {
+                const collToTab: Record<string, TabKey> = { notes: "notes", assignments: "school", jobs: "jobs", research: "research", sessions: "home" };
+                const targetTab = collToTab[doc.collection] || "home";
+                return (
                 <button
                   key={doc.id}
                   className="w-full text-left rounded-xl px-3 py-2.5 hover:bg-white/5 transition"
-                  onClick={() => setSearchOpen(false)}
+                  onClick={() => { handleSwitchTab(targetTab); setSearchOpen(false); setSearchQuery(""); }}
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-zinc-500 uppercase bg-white/5 rounded px-1.5 py-0.5">{doc.collection}</span>
-                    <span className="text-xs text-white truncate">{doc.searchText.slice(0, 60)}</span>
+                    <span className="text-xs text-white truncate">{(doc.meta as Record<string, string>)?.title || doc.searchText.slice(0, 60)}</span>
                   </div>
                   <div className="text-[10px] text-zinc-500 mt-0.5 flex gap-2">
                     {doc.tags.slice(0, 3).map((t) => <span key={t} className="bg-white/5 rounded px-1">{t}</span>)}
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
