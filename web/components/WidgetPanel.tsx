@@ -1013,8 +1013,102 @@ function NotesWidgets({ notes, refresh }: { notes: Note[]; refresh: () => void }
    SETTINGS — Preferences & connectors
    ═══════════════════════════════════════════════════════ */
 function SettingsWidgets() {
+  const [serviceStatus, setServiceStatus] = useState<{
+    endpoints?: { name: string; status: string; latencyMs: number | null }[];
+    portReference?: { port: number; protocol: string; service: string; description: string; required: boolean }[];
+    cleanupCommands?: { label: string; command: string }[];
+  } | null>(null);
+  const [serviceLoading, setServiceLoading] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const checkServices = useCallback(async () => {
+    setServiceLoading(true);
+    try {
+      const res = await fetch("/api/debug/services");
+      if (res.ok) {
+        const data = await res.json();
+        setServiceStatus(data);
+      }
+    } catch { /* ignore — endpoint not available */ }
+    setServiceLoading(false);
+  }, []);
+
+  const copyCmd = useCallback((cmd: string) => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopied(cmd);
+      setTimeout(() => setCopied(null), 1500);
+    }).catch(() => {});
+  }, []);
+
   return (
     <div className="space-y-3">
+      {/* ── VPS Services & Port Monitor ── */}
+      <Card title="VPS Services" icon="🔌" actions={
+        <button onClick={checkServices} disabled={serviceLoading}
+          className="text-[10px] px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 transition disabled:opacity-50">
+          {serviceLoading ? "Checking…" : "Check Status"}
+        </button>
+      }>
+        {!serviceStatus ? (
+          <div className="text-xs text-zinc-500 py-2">Click <strong>Check Status</strong> to probe VPS endpoints.</div>
+        ) : (
+          <div className="space-y-3">
+            {/* Endpoint connectivity */}
+            {serviceStatus.endpoints && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Tunnel Endpoints</div>
+                {serviceStatus.endpoints.map((ep) => (
+                  <div key={ep.name} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                    <span className="text-xs text-white">{ep.name}</span>
+                    <div className="flex items-center gap-2">
+                      {ep.latencyMs != null && <span className="text-[10px] text-zinc-500">{ep.latencyMs}ms</span>}
+                      <Badge color={ep.status === "reachable" ? "emerald" : ep.status === "not_configured" ? "zinc" : "rose"}>
+                        {ep.status === "reachable" ? "Online" : ep.status === "not_configured" ? "Not set" : "Offline"}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Port reference table */}
+            {serviceStatus.portReference && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">OpenClaw Port Reference</div>
+                {serviceStatus.portReference.map((p) => (
+                  <div key={p.port} className="rounded-xl bg-white/5 px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-white font-mono">:{p.port} <span className="text-zinc-500">{p.protocol}</span></span>
+                      <Badge color={p.required ? "emerald" : "zinc"}>{p.required ? "Required" : "Optional"}</Badge>
+                    </div>
+                    <div className="text-[10px] text-zinc-400 mt-0.5">{p.service} — {p.description}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Cleanup commands */}
+            {serviceStatus.cleanupCommands && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Terminal Commands</div>
+                {serviceStatus.cleanupCommands.map((c) => (
+                  <div key={c.label} className="rounded-xl bg-white/5 px-3 py-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-zinc-400">{c.label}</span>
+                      <button onClick={() => copyCmd(c.command)}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 transition">
+                        {copied === c.command ? "✓ Copied" : "Copy"}
+                      </button>
+                    </div>
+                    <code className="block text-[10px] text-cyan-400 font-mono break-all">{c.command}</code>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
       <Card title="Account" icon="👤">
         <div className="space-y-2 text-xs text-zinc-300">
           <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">

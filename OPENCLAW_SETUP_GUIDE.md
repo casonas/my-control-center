@@ -62,18 +62,25 @@ ps aux | grep openclaw
 ### A4. Find what port OpenClaw uses
 
 ```bash
-netstat -tulpn 2>/dev/null | grep -E '8080|8000|3000|openclaw'
-```
-
-Or if `netstat` is not available:
-
-```bash
 ss -tulpn | grep -E '8080|8000|3000|openclaw'
 ```
 
 ✅ **Verify:** You see a line showing `LISTEN` on a port (commonly 8080).
 
-📝 **Write down your port:** `________` (e.g., 8080)
+Here's what each port means — **only 8080 is "your" port**:
+
+| Port | Process | What It Is | Action |
+|------|---------|-----------|--------|
+| **8080** | `uvicorn` | **Your OpenClaw API** — tunnel points here | ✅ This is the one |
+| 18789 | `openclaw-gateway` | Internal metrics — auto-managed | Don't touch |
+| 18792 | `openclaw-gateway` | Internal control plane — auto-managed | Don't touch |
+| 5353 | `openclaw-gateway` | mDNS discovery (UDP) — harmless | Ignore |
+| 3000 | `next-server` | Next.js dev server — only during development | Kill if not developing |
+
+📝 **Your OpenClaw port is: `8080`** (unless your config changed it)
+
+> **Cleanup tip:** If you see port 3000 and you're not developing, stop it:
+> `kill $(lsof -t -i:3000) 2>/dev/null` or `fuser -k 3000/tcp` if lsof is not installed
 
 🔥 **If you see nothing:**
 - OpenClaw might use a different port. Check OpenClaw config files:
@@ -596,6 +603,49 @@ npm run dev
 ### H3. Open http://localhost:3000
 
 ✅ **Verify:** Agents show green dots and chat works.
+
+---
+
+## OpenClaw Port Reference
+
+When you run `ss -tulpn | grep -E '8080|18789|18792|5353|3000|openclaw'` on your VPS,
+here is what each port means:
+
+| Port | Protocol | Process | What It Is | Required? |
+|------|----------|---------|-----------|-----------|
+| **8080** | TCP | `uvicorn` | **OpenClaw AI backend** — your Cloudflare Tunnel proxies here | ✅ Yes |
+| 18789 | TCP | `openclaw-gateway` | Internal gateway metrics — auto-managed | ✅ Don't touch |
+| 18792 | TCP | `openclaw-gateway` | Internal gateway control plane — auto-managed | ✅ Don't touch |
+| 5353 | UDP (×3) | `openclaw-gateway` | mDNS local service discovery — harmless | ⚠️ Ignore |
+| 3000 | TCP | `next-server` | Next.js dev server — **only if developing locally** | ❌ Not in prod |
+
+### Port Cleanup
+
+The **only** port you should clean up is **3000** if you're not actively developing:
+
+```bash
+# Stop the Next.js dev server (port 3000)
+kill $(lsof -t -i:3000) 2>/dev/null || fuser -k 3000/tcp 2>/dev/null || echo 'not running'
+```
+
+Everything else (8080, 18789, 18792, 5353) is normal OpenClaw operation. If you stop
+those processes your AI agents will go offline.
+
+### Quick Port Commands
+
+```bash
+# See all OpenClaw-related ports
+ss -tulpn | grep -E '8080|18789|18792|5353|openclaw'
+
+# Restart OpenClaw (brings back 8080 + gateway ports)
+sudo systemctl restart openclaw
+
+# Restart Cloudflare Tunnel
+sudo systemctl restart cloudflared
+
+# Check tunnel status
+sudo systemctl status cloudflared --no-pager
+```
 
 ---
 
