@@ -285,7 +285,8 @@ If you hit the rate limit during testing, use one of these alternatives:
 # Install acme.sh
 curl https://get.acme.sh | sh -s email=you@example.com
 
-# Stop Caddy first — standalone mode needs ports 80/443 free
+# Stop Caddy first — standalone mode needs ports 80/443 free.
+# ⚠️  This causes brief downtime until Caddy restarts at the end.
 sudo systemctl stop caddy
 
 # Issue certs (uses HTTP-01 challenge on port 80)
@@ -317,6 +318,10 @@ api.my-control-center.com {
 **Option B — Switch to nginx temporarily:**
 
 ```bash
+# Stop Caddy first to free ports 80/443
+sudo systemctl stop caddy
+sudo systemctl disable caddy
+
 sudo apt install nginx certbot python3-certbot-nginx
 sudo certbot --nginx -d api.my-control-center.com -d bridge.my-control-center.com
 ```
