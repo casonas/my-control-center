@@ -280,7 +280,7 @@ nano ~/.cloudflared/config.yml
 
 ### D3. Paste this configuration
 
-Replace **three things** in the template below:
+Replace **four things** in the template below:
 1. `YOUR_TUNNEL_ID` → the ID from step C1
 2. `YOUR_USERNAME` → the username from step D1
 3. `api.yourdomain.com` → the subdomain from step C3
