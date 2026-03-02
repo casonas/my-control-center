@@ -7,7 +7,6 @@ import {
   getAssignments, saveAssignment, deleteAssignment, toggleAssignment,
   getSkills, toggleLesson,
   getJobs, saveJob, toggleJobApplied,
-  getWatchlist,
   getResearch, toggleArticleRead, saveArticleNotes,
 } from "@/lib/store";
 import { apiGet, apiPost, apiPatch } from "@/lib/api";
@@ -814,56 +813,133 @@ function SportsWidgets(_: { refresh: () => void }) {
    STOCKS — Yahoo Finance style
    ═══════════════════════════════════════════════════════ */
 function StocksWidgets(_: { refresh: () => void }) {
-  const watchlist = getWatchlist("stock");
+  // API-backed state
+  interface WlItem { ticker: string; display_name?: string }
+  interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; asof?: string; source?: string }
+  interface IndexItem { symbol: string; value: number; change_pct?: number; asof?: string; source?: string }
+  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string }
+  interface InsightItem { id: string; title: string; bullets_json: string; sentiment?: string; ticker?: string; created_at: string }
 
-  // Simulated data (agent would provide real data)
-  const simPrices: Record<string, { price: number; change: number }> = {
-    AAPL: { price: 189.43, change: 1.24 },
-    MSFT: { price: 417.88, change: -0.52 },
-    CRWD: { price: 342.15, change: 3.87 },
-    PANW: { price: 298.62, change: 2.11 },
-    NET: { price: 98.77, change: -1.03 },
+  const [watchlist, setWatchlist] = useState<WlItem[]>([]);
+  const [quotes, setQuotes] = useState<QuoteItem[]>([]);
+  const [indices, setIndices] = useState<IndexItem[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [insights, setInsights] = useState<InsightItem[]>([]);
+  const [addTicker, setAddTicker] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  const loadAll = useCallback(async () => {
+    try { const d = await apiGet<{ tickers: WlItem[] }>("/stocks/watchlist"); setWatchlist(d.tickers || []); } catch { /* */ }
+    try { const d = await apiGet<{ quotes: QuoteItem[] }>("/stocks/quotes"); setQuotes(d.quotes || []); } catch { /* */ }
+    try { const d = await apiGet<{ indices: IndexItem[] }>("/stocks/indices"); setIndices(d.indices || []); } catch { /* */ }
+    try { const d = await apiGet<{ items: NewsItem[] }>("/stocks/news?limit=20"); setNews(d.items || []); } catch { /* */ }
+    try { const d = await apiGet<{ insights: InsightItem[] }>("/stocks/insights?ticker=ALL&limit=5"); setInsights(d.insights || []); } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  async function handleAddTicker() {
+    if (!addTicker.trim()) return;
+    try { await apiPost("/stocks/watchlist", { ticker: addTicker.trim() }); setAddTicker(""); loadAll(); }
+    catch { /* */ }
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true); setStatusMsg(null);
+    try {
+      const d = await apiPost<{ ok: boolean; tickers?: number; source?: string; error?: string }>("/stocks/refresh", {});
+      setStatusMsg(d.ok ? `Refreshed ${d.tickers || 0} tickers (${d.source || "done"})` : (d.error || "Failed"));
+      loadAll();
+    } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleNewsScan() {
+    setScanning(true);
+    try {
+      const d = await apiPost<{ ok: boolean; newItems?: number }>("/stocks/news", {});
+      setStatusMsg(`News: ${d.newItems || 0} new items`);
+      loadAll();
+    } catch { /* */ }
+    finally { setScanning(false); }
+  }
+
+  const quoteMap = Object.fromEntries(quotes.map((q) => [q.ticker, q]));
+
+  const idxDisplay = (sym: string, label: string) => {
+    const idx = indices.find((i) => i.symbol === sym);
+    if (!idx || idx.source === "pending") return (
+      <div className="glass-light rounded-xl p-3 text-center">
+        <div className="text-[10px] text-zinc-400">{label}</div>
+        <div className="text-[10px] text-zinc-600">Not configured</div>
+      </div>
+    );
+    const isUp = (idx.change_pct || 0) >= 0;
+    return (
+      <div className="glass-light rounded-xl p-3 text-center">
+        <div className="text-[10px] text-zinc-400">{label}</div>
+        <div className={cx("text-sm font-bold", isUp ? "text-emerald-400" : "text-rose-400")}>
+          {isUp ? "+" : ""}{(idx.change_pct || 0).toFixed(2)}%
+        </div>
+      </div>
+    );
   };
 
   return (
     <div className="space-y-3">
       {/* Market overview */}
       <div className="grid grid-cols-3 gap-2">
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">S&P 500</div>
-          <div className="text-sm font-bold text-emerald-400">+0.42%</div>
-        </div>
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">NASDAQ</div>
-          <div className="text-sm font-bold text-emerald-400">+0.78%</div>
-        </div>
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">BTC</div>
-          <div className="text-sm font-bold text-rose-400">-1.23%</div>
-        </div>
+        {idxDisplay("SPX", "S&P 500")}
+        {idxDisplay("IXIC", "NASDAQ")}
+        {idxDisplay("BTC", "BTC")}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh"}
+        </button>
+        <button onClick={handleNewsScan} disabled={scanning}
+          className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition">
+          {scanning ? "Scanning…" : "📰 Scan News"}
+        </button>
+        {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
       <AgentStatus verb="monitoring market movements" />
 
       {/* Watchlist */}
-      <Card title="Watchlist" icon="📊">
+      <Card title="Watchlist" icon="📊" actions={
+        <div className="flex items-center gap-1">
+          <input className="w-20 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[10px] text-white placeholder-zinc-500 outline-none uppercase"
+            placeholder="TICKER" value={addTicker} onChange={(e) => setAddTicker(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAddTicker(); }} />
+          <button onClick={handleAddTicker} className="text-[10px] px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">+</button>
+        </div>
+      }>
         <div className="space-y-1.5">
+          {watchlist.length === 0 && <div className="text-[10px] text-zinc-500">Add tickers to your watchlist above.</div>}
           {watchlist.map((w) => {
-            const data = simPrices[w.symbol];
-            const isUp = data && data.change > 0;
+            const q = quoteMap[w.ticker];
+            const hasData = q && q.source !== "pending";
+            const isUp = hasData && (q.change_pct || 0) >= 0;
             return (
-              <div key={w.id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition">
+              <div key={w.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition">
                 <div>
-                  <div className="text-xs font-semibold text-white">{w.symbol}</div>
-                  <div className="text-[10px] text-zinc-500">{w.name}</div>
+                  <div className="text-xs font-semibold text-white">{w.ticker}</div>
+                  <div className="text-[10px] text-zinc-500">{w.display_name || ""}</div>
                 </div>
-                {data && (
+                {hasData ? (
                   <div className="text-right">
-                    <div className="text-xs font-semibold text-white">${data.price.toFixed(2)}</div>
+                    <div className="text-xs font-semibold text-white">${q.price.toFixed(2)}</div>
                     <div className={cx("text-[10px] font-medium", isUp ? "text-emerald-400" : "text-rose-400")}>
-                      {isUp ? "▲" : "▼"} {Math.abs(data.change).toFixed(2)}%
+                      {isUp ? "▲" : "▼"} {Math.abs(q.change_pct || 0).toFixed(2)}%
                     </div>
                   </div>
+                ) : (
+                  <div className="text-[10px] text-zinc-600">Pending</div>
                 )}
               </div>
             );
@@ -873,31 +949,47 @@ function StocksWidgets(_: { refresh: () => void }) {
 
       {/* Market News */}
       <Card title="Market News" icon="📰">
-        <div className="space-y-2">
-          {[
-            { title: "CrowdStrike Reports Record Q4 Earnings", time: "2h ago", sentiment: "bullish" },
-            { title: "Fed Signals Steady Rates Through Q2", time: "4h ago", sentiment: "neutral" },
-            { title: "Cloudflare Expands AI Infrastructure", time: "6h ago", sentiment: "bullish" },
-            { title: "Tech Sector Leads S&P 500 Rally", time: "8h ago", sentiment: "bullish" },
-          ].map((n, i) => (
-            <div key={i} className="rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition cursor-pointer">
+        <div className="space-y-2 max-h-64 overflow-auto">
+          {news.length === 0 && <div className="text-[10px] text-zinc-500">Click Scan News to fetch market headlines.</div>}
+          {news.map((n) => (
+            <a key={n.id} href={n.url} target="_blank" rel="noopener noreferrer"
+              className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
               <div className="flex items-start justify-between gap-2">
-                <div className="text-xs text-white">{n.title}</div>
-                <Badge color={n.sentiment === "bullish" ? "emerald" : n.sentiment === "bearish" ? "rose" : "zinc"}>
-                  {n.sentiment}
-                </Badge>
+                <div className="text-xs text-white hover:underline">{n.title} ↗</div>
+                {n.sentiment && (
+                  <Badge color={n.sentiment === "bullish" ? "emerald" : n.sentiment === "bearish" ? "rose" : "zinc"}>
+                    {n.sentiment}
+                  </Badge>
+                )}
               </div>
-              <div className="text-[10px] text-zinc-500 mt-0.5">{n.time}</div>
-            </div>
+              <div className="text-[10px] text-zinc-500 mt-0.5">{n.source} · {n.published_at ? new Date(n.published_at).toLocaleDateString() : ""}</div>
+            </a>
           ))}
         </div>
       </Card>
 
-      {/* Analysis */}
+      {/* AI Insights */}
       <Card title="AI Analysis" icon="🤖">
-        <div className="text-[10px] text-zinc-400">Ask your stocks agent for real-time analysis, technical indicators, and portfolio recommendations.</div>
-        <button className="mt-2 px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 transition">
-          Analyze Portfolio →
+        {insights.length === 0 ? (
+          <div className="text-[10px] text-zinc-400">No insights yet. Generate a briefing or ask your stocks agent.</div>
+        ) : (
+          <div className="space-y-2">
+            {insights.map((ins) => {
+              let bullets: string[] = [];
+              try { bullets = JSON.parse(ins.bullets_json); } catch { /* */ }
+              return (
+                <div key={ins.id} className="rounded-xl bg-white/5 p-3">
+                  <div className="text-xs font-semibold text-white">{ins.title}</div>
+                  {bullets.map((b, i) => <div key={i} className="text-[10px] text-zinc-400 mt-0.5">• {b}</div>)}
+                  <div className="text-[9px] text-zinc-600 mt-1">{new Date(ins.created_at).toLocaleString()}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <button onClick={() => apiPost("/stocks/insights/generate", {}).catch(() => {})}
+          className="mt-2 px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 transition">
+          Generate Briefing →
         </button>
       </Card>
     </div>
