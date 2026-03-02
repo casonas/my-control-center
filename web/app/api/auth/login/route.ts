@@ -7,6 +7,10 @@ export const runtime = "edge";
 
 import { createSession, verifyPassword } from "@/lib/auth";
 
+// This is a single-owner personal dashboard — the user identity is fixed.
+const OWNER_ID = "owner";
+const OWNER_USERNAME = "admin";
+
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as { password?: string } | null;
   const password = body?.password ?? "";
@@ -20,7 +24,7 @@ export async function POST(req: Request) {
   return Response.json({
     ok: true,
     authenticated: true,
-    user: { id: "owner", username: "admin" },
+    user: { id: OWNER_ID, username: OWNER_USERNAME },
     csrfToken,
   });
 }

@@ -1,8 +1,21 @@
 // PM2 process manager config — keeps the dashboard and bridge alive 24/7
 // on your VPS even after crashes or reboots.
 //
+// ── BEFORE YOU START ────────────────────────────────────────────────────────
+// Sensitive secrets (MCC_PASSWORD, MCC_COOKIE_SIGNING_SECRET) must be set in
+// the shell environment BEFORE starting PM2 — do NOT hardcode them here since
+// this file is committed to git.
+//
+// Quickest way: create /home/openclaw/.env.secrets with:
+//   export MCC_PASSWORD="your-strong-password"
+//   export MCC_COOKIE_SIGNING_SECRET="$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))")"
+//
+// Then load it and start PM2 in one command:
+//   source /home/openclaw/.env.secrets && pm2 start vps/pm2.config.js
+//
+// ── INSTALL & RUN ────────────────────────────────────────────────────────────
 // Install:  npm install -g pm2
-// Start:    pm2 start pm2.config.js
+// Start:    source ~/.env.secrets && pm2 start vps/pm2.config.js
 // Save:     pm2 save          (persists process list across reboots)
 // Boot:     pm2 startup       (follow the printed command to enable autostart)
 //
@@ -20,14 +33,11 @@ module.exports = {
       args: "start -p 3000",
       interpreter: "none",        // next is already a Node.js binary wrapper
 
-      // Env vars — never hardcode secrets; edit this file on the VPS only
+      // Non-sensitive env vars only.
+      // MCC_PASSWORD and MCC_COOKIE_SIGNING_SECRET are read from the shell
+      // environment (set via `source ~/.env.secrets` before `pm2 start`).
       env: {
         NODE_ENV: "production",
-
-        // ── Auth ───────────────────────────────────────────────────
-        // Change both of these to strong random values.
-        MCC_PASSWORD: "CHANGE_ME_strong_password",
-        MCC_COOKIE_SIGNING_SECRET: "CHANGE_ME_random_64char_secret",
 
         // ── API base: stays /api so Next.js routes the calls itself ─
         NEXT_PUBLIC_API_BASE: "/api",

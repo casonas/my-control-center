@@ -7,6 +7,9 @@ export const runtime = "edge";
 
 import { getSession } from "@/lib/auth";
 
+// Single-owner personal dashboard — identity is fixed in the signed token.
+const OWNER_USERNAME = "admin";
+
 export async function GET() {
   const session = await getSession();
 
@@ -18,7 +21,7 @@ export async function GET() {
     ok: true,
     authenticated: true,
     authed: true,
-    user: { id: session.userId, username: "admin" },
+    user: { id: session.userId, username: OWNER_USERNAME },
     csrfToken: session.csrfToken,
   });
 }

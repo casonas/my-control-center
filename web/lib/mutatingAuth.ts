@@ -12,6 +12,10 @@ export type SessionRow = {
   expires_at: string;
 };
 
+// Placeholder session id for stateless (cookie-signed) sessions.
+// There is no database row — the session lives entirely in the signed cookie.
+const STATELESS_SESSION_ID = "stateless";
+
 class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -81,7 +85,7 @@ export async function requireMutatingAuth(req: Request): Promise<{ session: Sess
 
   return {
     session: {
-      id: "stateless",
+      id: STATELESS_SESSION_ID,
       user_id: session.userId,
       csrf_token: session.csrfToken,
       expires_at: new Date(session.expiresAt).toISOString(),

@@ -114,7 +114,18 @@ npm install -g pm2
 # Create the log directory
 mkdir -p ~/logs
 
-# Start the dashboard + bridge together
+# Create a secrets file — stays only on the VPS, never committed to git
+cat > ~/.env.secrets << 'EOF'
+export MCC_PASSWORD="your-strong-password-here"
+export MCC_COOKIE_SIGNING_SECRET="paste-a-long-random-string-here"
+EOF
+chmod 600 ~/.env.secrets
+
+# Generate a signing secret (copy the output into .env.secrets above)
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+
+# Source secrets then start both processes
+source ~/.env.secrets
 cd ~/my-control-center
 pm2 start vps/pm2.config.js
 
@@ -131,6 +142,9 @@ pm2 save
 # Enable PM2 to start on boot (follow the command it prints)
 pm2 startup
 ```
+
+> **Reboot tip:** Add `source ~/.env.secrets` to `~/.profile` so secrets are
+> available when PM2 auto-starts after a reboot.
 
 ---
 
