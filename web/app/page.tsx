@@ -168,6 +168,60 @@ export default function Home() {
   // Per-agent message cache — survives agent switching
   const chatCacheRef = useRef<Record<string, { msgs: Msg[]; convId: string | null }>>({});
 
+  /* ─── Chat sessions (D1-backed history) ─── */
+  interface ChatSessionItem { id: string; agent_id: string; title: string; updated_at: string; pinned: number }
+  const [chatSessions, setChatSessions] = useState<ChatSessionItem[]>([]);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  const loadSessions = useCallback(async (agentId: string) => {
+    try {
+      const data = await apiGet<{ sessions: ChatSessionItem[] }>(`/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
+      setChatSessions(data.sessions || []);
+    } catch {
+      // D1 not available — non-fatal
+      setChatSessions([]);
+    }
+  }, []);
+
+  // Reload sessions when agent changes
+  useEffect(() => {
+    if (authed) loadSessions(activeAgentId);
+  }, [activeAgentId, authed, loadSessions]);
+
+  async function handleNewChat() {
+    try {
+      const data = await apiPost<{ sessionId?: string; conversationId?: string }>("/chat/sessions", { agentId: activeAgentId });
+      const newId = data.sessionId || data.conversationId || crypto.randomUUID();
+      setConversationId(newId);
+      setMessages([]);
+      chatSnapToBottom();
+      loadSessions(activeAgentId);
+    } catch {
+      // Fall back to conversations endpoint
+      const data = await apiPost<{ conversationId: string }>("/conversations", { agentId: activeAgentId });
+      setConversationId(data.conversationId);
+      setMessages([]);
+    }
+    setSessionsOpen(false);
+  }
+
+  async function handleSelectSession(sessionId: string) {
+    try {
+      const data = await apiGet<{ session: ChatSessionItem; messages: { role: string; content: string }[] }>(`/chat/sessions/${sessionId}`);
+      setConversationId(sessionId);
+      setMessages((data.messages || []).map((m) => ({
+        role: m.role === "user" ? "user" as const : "agent" as const,
+        content: m.content,
+      })));
+      chatSnapToBottom();
+    } catch {
+      // D1 not available — just switch the ID
+      setConversationId(sessionId);
+      setMessages([]);
+    }
+    setSessionsOpen(false);
+  }
+
   /* ─── Notes ─── */
   const [notesTick, setNotesTick] = useState(0);
   const [notesFilter, setNotesFilter] = useState<TabKey | "all">("all");
@@ -313,6 +367,7 @@ export default function Home() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      loadSessions(activeAgentId);
     }
   }
 
@@ -657,7 +712,7 @@ export default function Home() {
 
     return (
       <section className={cx("glass-light rounded-2xl flex flex-col min-h-[60vh] lg:min-h-[75vh]", glowMap[activeTab])}>
-        {/* A) Sticky header */}
+        {/* A) Sticky header with session controls */}
         <div className="shrink-0 p-3 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base">{activeAgent?.emoji || "🤖"}</span>
@@ -674,10 +729,43 @@ export default function Home() {
               </div>
             </div>
           </div>
-          <div className="text-[10px] text-zinc-600">
-            {conversationId ? `#${conversationId.slice(0, 6)}` : "—"}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleNewChat}
+              className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
+              title="New chat"
+            >＋ New</button>
+            <button
+              onClick={() => setSessionsOpen((s) => !s)}
+              className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
+              title="Chat history"
+            >📋 {chatSessions.length > 0 ? chatSessions.length : ""}</button>
           </div>
         </div>
+
+        {/* Session list dropdown */}
+        {sessionsOpen && (
+          <div className="shrink-0 border-b border-white/5 max-h-48 overflow-y-auto bg-black/20">
+            {chatSessions.length === 0 && (
+              <div className="text-[10px] text-zinc-500 text-center py-3">No saved sessions</div>
+            )}
+            {chatSessions.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => handleSelectSession(s.id)}
+                className={cx(
+                  "w-full text-left px-3 py-2 text-xs transition hover:bg-white/5 flex items-center gap-2",
+                  s.id === conversationId ? "text-white bg-white/5" : "text-zinc-400"
+                )}
+              >
+                {s.pinned ? "📌 " : ""}{s.title}
+                <span className="ml-auto text-[9px] text-zinc-600 shrink-0">
+                  {new Date(s.updated_at).toLocaleDateString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* B) Scrollable messages */}
         <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
