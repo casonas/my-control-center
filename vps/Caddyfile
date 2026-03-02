@@ -1,4 +1,8 @@
-# Caddyfile — automatic HTTPS for the MCC dashboard on your VPS.
+# Caddyfile — automatic HTTPS reverse proxy for my-control-center.com
+#
+# Architecture:
+#   Cloudflare Pages (dashboard) → api.my-control-center.com  → OpenClaw Gateway :18789
+#                                → bridge.my-control-center.com → MCC Bridge     :8081
 #
 # Caddy handles SSL cert renewal automatically (Let's Encrypt).
 # No certbot, no cronjobs, no manual renewal needed.
@@ -9,28 +13,53 @@
 #   curl -1sLf 'https://dl.cloudflare.com/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 #   sudo apt update && sudo apt install caddy
 #
-# Configure:
-#   sudo nano /etc/caddy/Caddyfile   ← paste the block below (replace the domain)
+# Deploy:
+#   sudo cp ~/my-control-center/vps/Caddyfile /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# OPTION A — You have a domain (recommended, gives you free HTTPS)
+# DNS (Cloudflare): A records for api + bridge → VPS IP (proxied OK).
 #
-# Replace "dashboard.yourdomain.com" with your actual subdomain.
-# In Cloudflare DNS: add an A record → your VPS IP, orange-cloud OFF
-# (orange-cloud ON also works but adds Cloudflare proxy latency).
 # ─────────────────────────────────────────────────────────────────────────────
 
-dashboard.yourdomain.com {
-    reverse_proxy localhost:3000
+# ── OpenClaw Gateway API ─────────────────────────────────────────────────────
+api.my-control-center.com {
+    reverse_proxy localhost:18789
+
+    # CORS headers for Cloudflare Pages dashboard
+    header {
+        Access-Control-Allow-Origin "https://my-control-center.pages.dev"
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
+        Access-Control-Allow-Credentials "true"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # Handle CORS preflight
+    @preflight method OPTIONS
+    respond @preflight 204
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# OPTION B — No domain yet, access by VPS IP on port 3000 directly
-#
-# Delete the block above and leave Caddy unconfigured, then access the
-# dashboard at http://YOUR_VPS_IP:3000 (no HTTPS until you add a domain).
-#
-# Make sure port 3000 is open in your VPS firewall:
-#   sudo ufw allow 3000/tcp
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Bridge Service (SSE streaming) ───────────────────────────────────────────
+bridge.my-control-center.com {
+    reverse_proxy localhost:8081 {
+        # Disable response buffering so SSE chunks arrive immediately
+        flush_interval -1
+        # Strip upstream CORS headers — Caddy sets the authoritative ones below
+        header_down -Access-Control-Allow-Origin
+        header_down -Access-Control-Allow-Methods
+        header_down -Access-Control-Allow-Headers
+    }
+
+    # CORS headers for Cloudflare Pages dashboard
+    header {
+        Access-Control-Allow-Origin "https://my-control-center.pages.dev"
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization, X-Agent-Id, X-Agent-Session, X-Collab-Agents, X-Request-Id, X-CSRF"
+        Access-Control-Allow-Credentials "true"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # Handle CORS preflight
+    @preflight method OPTIONS
+    respond @preflight 204
+}

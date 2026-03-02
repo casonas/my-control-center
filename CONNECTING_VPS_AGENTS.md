@@ -8,7 +8,20 @@ Browser → Caddy (HTTPS) → Next.js dashboard (port 3000)
                                    ↓ localhost
                           MCC Bridge (port 8081)
                                    ↓ localhost
-                          OpenClaw agents (port 8080)
+                          OpenClaw agents (port 18789)
+```
+
+**Or** host the dashboard on Cloudflare Pages and proxy only the API/bridge
+traffic through Caddy on the VPS:
+
+```
+Cloudflare Pages                     VPS (Caddy :443)
+┌──────────────┐     HTTPS     ┌──────────────────────────────┐
+│  Dashboard   │──────────────→│ api.my-control-center.com    │
+│  (static)    │               │   → OpenClaw Gateway :18789  │
+│              │──────────────→│ bridge.my-control-center.com │
+│              │               │   → MCC Bridge :8081         │
+└──────────────┘               └──────────────────────────────┘
 ```
 
 ---
@@ -192,9 +205,8 @@ curl -1sLf 'https://dl.cloudflare.com/caddy/stable/debian.deb.txt' \
   | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update && sudo apt install caddy
 
-# Configure — replace the domain with yours
+# Deploy the Caddyfile — serves api + bridge subdomains with CORS & SSE support
 sudo cp ~/my-control-center/vps/Caddyfile /etc/caddy/Caddyfile
-sudo nano /etc/caddy/Caddyfile   # replace dashboard.yourdomain.com
 
 # Open HTTPS port and start
 sudo ufw allow 80/tcp
@@ -203,14 +215,28 @@ sudo systemctl enable --now caddy
 sudo systemctl reload caddy
 ```
 
-In your DNS (Cloudflare or any registrar): add an **A record** pointing
-`dashboard.yourdomain.com` → your VPS IP.
+In Cloudflare DNS, add **A records** pointing to your VPS IP:
 
-> **Cloudflare DNS tip:** Use **DNS-only** (grey cloud), not proxied
-> (orange cloud), for the A record. Caddy handles SSL directly — Cloudflare
-> proxy would interfere with the certificate request.
+| Type | Name     | Content           | Proxy |
+|------|----------|-------------------|-------|
+| A    | api      | YOUR_VPS_IP       | 🟡    |
+| A    | bridge   | YOUR_VPS_IP       | 🟡    |
 
-✅ **Verify:** `https://dashboard.yourdomain.com` loads with a green padlock.
+> **Tip:** Proxied (orange cloud) is fine — Caddy handles SSL behind
+> Cloudflare's edge. See `vps/Caddyfile` for the full configuration
+> including CORS headers, preflight handling, and SSE flush settings.
+
+Set the following environment variables in Cloudflare Pages:
+
+```
+MCC_VPS_SSE_URL=https://bridge.my-control-center.com/chat/stream
+MCC_VPS_CONNECT_URL=https://bridge.my-control-center.com/agents/connect
+MCC_VPS_HEARTBEAT_URL=https://bridge.my-control-center.com/agents/heartbeat
+MCC_VPS_SCAN_URL=https://bridge.my-control-center.com/agents/scan
+```
+
+✅ **Verify:** `https://api.my-control-center.com` and
+`https://bridge.my-control-center.com` both respond with a green padlock.
 
 ---
 
@@ -243,10 +269,10 @@ pm2 logs mcc-bridge --lines 50
 
 | Component | Port | Managed by | Talks to |
 |-----------|------|-----------|----------|
-| Next.js dashboard | 3000 | PM2 | bridge on :8081 |
-| MCC bridge | 8081 | PM2 | OpenClaw on :8080 |
-| OpenClaw agents | 8080 | openclaw / systemd | — |
-| Caddy (optional) | 443 | systemd | dashboard on :3000 |
+| Caddy (HTTPS) | 443 | systemd | api → :18789, bridge → :8081 |
+| OpenClaw Gateway | 18789 | openclaw / systemd | — |
+| MCC bridge | 8081 | PM2 | OpenClaw on :18789 |
+| Next.js dashboard | 3000 | PM2 (VPS) or Cloudflare Pages | bridge on :8081 |
 
 Everything communicates over `localhost` — no tunnel, no extra hops,
 maximum speed.
