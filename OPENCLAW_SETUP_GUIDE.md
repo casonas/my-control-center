@@ -80,7 +80,7 @@ Here's what each port means — **only 8080 is "your" port**:
 📝 **Your OpenClaw port is: `8080`** (unless your config changed it)
 
 > **Cleanup tip:** If you see port 3000 and you're not developing, stop it:
-> `kill $(lsof -t -i:3000) 2>/dev/null`
+> `kill $(lsof -t -i:3000) 2>/dev/null` or `fuser -k 3000/tcp` if lsof is not installed
 
 🔥 **If you see nothing:**
 - OpenClaw might use a different port. Check OpenClaw config files:
@@ -625,7 +625,7 @@ The **only** port you should clean up is **3000** if you're not actively develop
 
 ```bash
 # Stop the Next.js dev server (port 3000)
-kill $(lsof -t -i:3000) 2>/dev/null || echo 'not running'
+kill $(lsof -t -i:3000) 2>/dev/null || fuser -k 3000/tcp 2>/dev/null || echo 'not running'
 ```
 
 Everything else (8080, 18789, 18792, 5353) is normal OpenClaw operation. If you stop

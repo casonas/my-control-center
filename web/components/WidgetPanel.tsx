@@ -1025,8 +1025,11 @@ function SettingsWidgets() {
     setServiceLoading(true);
     try {
       const res = await fetch("/api/debug/services");
-      if (res.ok) setServiceStatus(await res.json());
-    } catch { /* ignore */ }
+      if (res.ok) {
+        const data = await res.json();
+        setServiceStatus(data);
+      }
+    } catch { /* ignore — endpoint not available */ }
     setServiceLoading(false);
   }, []);
 

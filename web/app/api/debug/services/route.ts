@@ -63,7 +63,7 @@ const CLEANUP_COMMANDS = [
   },
   {
     label: "Stop Next.js dev server (port 3000)",
-    command: "kill $(lsof -t -i:3000) 2>/dev/null || echo 'not running'",
+    command: "kill $(lsof -t -i:3000) 2>/dev/null || fuser -k 3000/tcp 2>/dev/null || echo 'not running'",
   },
   {
     label: "Check tunnel status",
@@ -95,7 +95,7 @@ export async function GET() {
   // Probe each configured endpoint
   const checks = await Promise.all(
     endpoints.map(async (ep) => {
-      if (!ep.url) return { name: ep.name, status: "not_configured" as const, url: null, latencyMs: null };
+      if (!ep.url) return { name: ep.name, status: "not_configured" as const, url: null, latencyMs: null, httpStatus: null };
 
       const start = Date.now();
       try {
@@ -118,6 +118,7 @@ export async function GET() {
           status: "unreachable" as const,
           url: ep.url,
           latencyMs: Date.now() - start,
+          httpStatus: null,
         };
       }
     }),
