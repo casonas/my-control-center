@@ -607,112 +607,237 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
 /* ═══════════════════════════════════════════════════════
    SKILLS — Udemy + Coursera style
    ═══════════════════════════════════════════════════════ */
-function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => void }) {
+function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refresh: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const avgProgress = skills.length ? Math.round(skills.reduce((s, sk) => s + sk.progress, 0) / skills.length) : 0;
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<string | null>(null);
 
-  // "Continue where you left off" — find last skill with partial progress
-  const continueSkill = skills.find((s) => s.progress > 0 && s.progress < 100) || skills[0];
-  const nextLesson = continueSkill?.lessons.find((l) => !l.completed);
+  // API-backed data
+  interface RoadmapItem {
+    id: string; skill_id: string; skill_name: string; category?: string; level: string;
+    skill_description?: string; status: string; order_index: number;
+    total_lessons: number; completed_lessons: number;
+  }
+  interface RadarItem { id: string; title: string; url: string; summary?: string; tags_json?: string; fetched_at: string }
+  interface Suggestion { id: string; proposed_skill_name: string; reason_md: string; status: string }
+  interface LessonItem {
+    id: string; module_title: string; lesson_title: string; order_index: number;
+    content_md: string; progress_status: string;
+  }
 
-  const gradientMap: Record<string, string> = {
-    Certification: "from-violet-500 to-purple-500",
-    Tool: "from-cyan-500 to-blue-500",
-    Skill: "from-rose-500 to-red-500",
-    Programming: "from-amber-500 to-orange-500",
-    Cloud: "from-emerald-500 to-green-500",
+  const [roadmap, setRoadmap] = useState<RoadmapItem[]>([]);
+  const [radarItems, setRadarItems] = useState<RadarItem[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [lessons, setLessons] = useState<LessonItem[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+
+  const loadRoadmap = useCallback(async () => {
+    try {
+      const d = await apiGet<{ roadmap: RoadmapItem[] }>("/skills/roadmap");
+      if (d.roadmap) { setRoadmap(d.roadmap); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadRadar = useCallback(async () => {
+    try { const d = await apiGet<{ items: RadarItem[] }>("/skills/radar?limit=10"); setRadarItems(d.items || []); } catch { /* */ }
+  }, []);
+
+  const loadSuggestions = useCallback(async () => {
+    try { const d = await apiGet<{ suggestions: Suggestion[] }>("/skills/suggestions?status=new"); setSuggestions(d.suggestions || []); } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadRoadmap(); loadRadar(); loadSuggestions(); }, [loadRoadmap, loadRadar, loadSuggestions]);
+
+  // Load lessons when a skill is expanded
+  useEffect(() => {
+    if (!expanded || !hasApi) return;
+    const item = roadmap.find((r) => r.skill_id === expanded);
+    if (!item) return;
+    apiGet<{ lessons: LessonItem[] }>(`/skills/${expanded}/lessons`).then((d) => setLessons(d.lessons || [])).catch(() => {});
+  }, [expanded, hasApi, roadmap]);
+
+  async function handleScan() {
+    setScanning(true); setScanResult(null);
+    try {
+      const d = await apiPost<{ ok: boolean; newItems?: number; suggestions?: number; error?: string }>("/skills/radar/scan", {});
+      setScanResult(d.ok ? `${d.newItems || 0} new items, ${d.suggestions || 0} suggestions` : (d.error || "Failed"));
+      loadRadar(); loadSuggestions();
+    } catch (e) { setScanResult(e instanceof Error ? e.message : "Failed"); }
+    finally { setScanning(false); }
+  }
+
+  async function handleLessonProgress(lessonId: string, status: string) {
+    try { await apiPost(`/lessons/${lessonId}/progress`, { status }); loadRoadmap(); } catch { /* fallback */ }
+  }
+
+  async function handleRoadmapStatus(roadmapId: string, status: string) {
+    try { await apiPatch(`/skills/roadmap/${roadmapId}`, { status }); loadRoadmap(); } catch { /* */ }
+  }
+
+  async function handleSuggestionAction(id: string, status: string) {
+    try { await apiPatch("/skills/suggestions", { id, status }); loadSuggestions(); } catch { /* */ }
+  }
+
+  // Merge: prefer API roadmap; fallback to local
+  const displaySkills = hasApi ? roadmap : localSkills.map((s, i) => ({
+    id: `local-${s.id}`, skill_id: s.id, skill_name: s.name, category: s.category, level: "beginner",
+    skill_description: "", status: s.progress === 100 ? "completed" : s.progress > 0 ? "in_progress" : "planned",
+    order_index: i, total_lessons: s.lessons.length,
+    completed_lessons: s.lessons.filter((l) => l.completed).length,
+  }));
+
+  const totalLessons = displaySkills.reduce((s, sk) => s + sk.total_lessons, 0);
+  const completedLessons = displaySkills.reduce((s, sk) => s + sk.completed_lessons, 0);
+  const avgProgress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+
+  const catGradient: Record<string, string> = {
+    cloud: "from-emerald-500 to-green-500", security: "from-violet-500 to-purple-500",
+    dev: "from-amber-500 to-orange-500", ai: "from-cyan-500 to-blue-500",
+  };
+  const catBadge: Record<string, string> = { cloud: "emerald", security: "violet", dev: "amber", ai: "cyan" };
+  const statusColor: Record<string, string> = {
+    planned: "zinc", in_progress: "amber", completed: "emerald", paused: "rose",
   };
 
-  const badgeColorMap: Record<string, string> = {
-    Certification: "violet",
-    Tool: "cyan",
-    Skill: "rose",
-    Programming: "amber",
-    Cloud: "emerald",
-  };
+  // Continue where you left off
+  const continueItem = displaySkills.find((s) => s.status === "in_progress") || displaySkills.find((s) => s.status === "planned");
 
   return (
     <div className="space-y-3">
       {/* Overall progress */}
-      <div className="glass-light rounded-2xl p-4 animate-fade-in">
+      <div id="skills-continue" className="glass-light rounded-2xl p-4 animate-fade-in">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-semibold text-zinc-100">Overall Progress</span>
           <span className="text-xs text-zinc-400">{avgProgress}%</span>
         </div>
         <ProgressBar value={avgProgress} gradient="from-amber-500 to-orange-500" />
         <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-          <div><div className="text-sm font-bold text-white">{skills.length}</div><div className="text-[10px] text-zinc-400">Skills</div></div>
-          <div><div className="text-sm font-bold text-white">{skills.reduce((s, sk) => s + sk.lessons.length, 0)}</div><div className="text-[10px] text-zinc-400">Lessons</div></div>
-          <div><div className="text-sm font-bold text-white">{skills.reduce((s, sk) => s + sk.lessons.filter((l) => l.completed).length, 0)}</div><div className="text-[10px] text-zinc-400">Completed</div></div>
+          <div><div className="text-sm font-bold text-white">{displaySkills.length}</div><div className="text-[10px] text-zinc-400">Skills</div></div>
+          <div><div className="text-sm font-bold text-white">{totalLessons}</div><div className="text-[10px] text-zinc-400">Lessons</div></div>
+          <div><div className="text-sm font-bold text-white">{completedLessons}</div><div className="text-[10px] text-zinc-400">Completed</div></div>
         </div>
       </div>
 
       {/* Continue where you left off */}
-      {nextLesson && continueSkill && (
-        <div className="glass-light rounded-2xl p-4 animate-fade-in border border-amber-500/20 glow-amber">
+      {continueItem && (
+        <div className="glass-light rounded-2xl p-4 animate-fade-in border border-amber-500/20">
           <div className="text-[10px] text-amber-400 font-semibold mb-1">▶ CONTINUE WHERE YOU LEFT OFF</div>
-          <div className="text-sm font-semibold text-white">{continueSkill.name}</div>
-          <div className="text-xs text-zinc-400 mt-0.5">Next: {nextLesson.title}</div>
-          <div className="text-[10px] text-zinc-500 mt-1">{nextLesson.description}</div>
-          <button onClick={() => setExpanded(continueSkill.id)} className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
+          <div className="text-sm font-semibold text-white">{continueItem.skill_name}</div>
+          <div className="text-xs text-zinc-400 mt-0.5">{continueItem.completed_lessons}/{continueItem.total_lessons} lessons</div>
+          <button onClick={() => { setExpanded(continueItem.skill_id); if (continueItem.status === "planned" && hasApi) handleRoadmapStatus(continueItem.id, "in_progress"); }}
+            className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
             Continue →
           </button>
         </div>
       )}
 
-      {/* Skill cards with expandable lessons */}
-      {skills.map((skill) => (
+      {/* Roadmap / Skill cards */}
+      {displaySkills.map((skill) => (
         <div key={skill.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
-          <button
-            onClick={() => setExpanded(expanded === skill.id ? null : skill.id)}
-            className="w-full text-left p-4 hover:bg-white/5 transition"
-          >
+          <button onClick={() => setExpanded(expanded === skill.skill_id ? null : skill.skill_id)}
+            className="w-full text-left p-4 hover:bg-white/5 transition">
             <div className="flex items-center gap-3">
-              <div className={cx("w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center text-sm font-bold text-white shrink-0", gradientMap[skill.category] || "from-zinc-500 to-zinc-600")}>
-                {skill.progress}%
+              <div className={cx("w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center text-sm font-bold text-white shrink-0",
+                catGradient[skill.category || ""] || "from-zinc-500 to-zinc-600")}>
+                {skill.total_lessons > 0 ? Math.round((skill.completed_lessons / skill.total_lessons) * 100) : 0}%
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-white truncate">{skill.name}</span>
-                  <Badge color={badgeColorMap[skill.category] || "zinc"}>{skill.category}</Badge>
+                  <span className="text-xs font-semibold text-white truncate">{skill.skill_name}</span>
+                  <Badge color={catBadge[skill.category || ""] || "zinc"}>{skill.category || "general"}</Badge>
+                  <Badge color={statusColor[skill.status] || "zinc"}>{skill.status}</Badge>
                 </div>
                 <div className="mt-1.5">
-                  <ProgressBar value={skill.progress} gradient={gradientMap[skill.category] || "from-zinc-500 to-zinc-400"} />
+                  <ProgressBar value={skill.total_lessons > 0 ? (skill.completed_lessons / skill.total_lessons) * 100 : 0}
+                    gradient={catGradient[skill.category || ""] || "from-zinc-500 to-zinc-400"} />
                 </div>
-                <div className="text-[10px] text-zinc-500 mt-1">
-                  {skill.lessons.filter((l) => l.completed).length}/{skill.lessons.length} lessons
-                </div>
+                <div className="text-[10px] text-zinc-500 mt-1">{skill.completed_lessons}/{skill.total_lessons} lessons · {skill.level}</div>
               </div>
-              <span className={cx("text-zinc-500 transition-transform", expanded === skill.id && "rotate-90")}>›</span>
+              <span className={cx("text-zinc-500 transition-transform", expanded === skill.skill_id && "rotate-90")}>›</span>
             </div>
           </button>
 
-          {/* Expanded lesson list */}
-          {expanded === skill.id && (
+          {expanded === skill.skill_id && (
             <div className="px-4 pb-4 space-y-1.5 animate-fade-in border-t border-white/5 pt-3">
-              {skill.lessons.map((lesson, li) => (
+              {hasApi && lessons.length > 0 ? lessons.map((lesson, li) => (
                 <div key={lesson.id} className="flex items-start gap-2.5 rounded-xl bg-white/5 p-3 hover:bg-white/10 transition">
-                  <button
-                    onClick={() => { toggleLesson(skill.id, lesson.id); refresh(); }}
-                    className={cx(
-                      "w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
-                      lesson.completed ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
-                    )}
-                  >
-                    {lesson.completed && "✓"}
+                  <button onClick={() => handleLessonProgress(lesson.id, lesson.progress_status === "completed" ? "not_started" : "completed")}
+                    className={cx("w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
+                      lesson.progress_status === "completed" ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
+                    )}>
+                    {lesson.progress_status === "completed" && "✓"}
                   </button>
                   <div className="min-w-0 flex-1">
-                    <div className={cx("text-xs font-medium", lesson.completed ? "text-zinc-500 line-through" : "text-white")}>
-                      <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.title}
+                    <div className={cx("text-xs font-medium", lesson.progress_status === "completed" ? "text-zinc-500 line-through" : "text-white")}>
+                      <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.lesson_title}
                     </div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.description}</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.module_title}</div>
                   </div>
                 </div>
-              ))}
+              )) : !hasApi && localSkills.find((s) => s.id === skill.skill_id) ? (
+                localSkills.find((s) => s.id === skill.skill_id)!.lessons.map((lesson, li) => (
+                  <div key={lesson.id} className="flex items-start gap-2.5 rounded-xl bg-white/5 p-3 hover:bg-white/10 transition">
+                    <button onClick={() => { toggleLesson(skill.skill_id, lesson.id); refresh(); }}
+                      className={cx("w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
+                        lesson.completed ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
+                      )}>
+                      {lesson.completed && "✓"}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className={cx("text-xs font-medium", lesson.completed ? "text-zinc-500 line-through" : "text-white")}>
+                        <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.title}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.description}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-[10px] text-zinc-500 py-2">No lessons yet. Add lessons via the API or chat with your career agent.</div>
+              )}
             </div>
           )}
         </div>
       ))}
+
+      {/* Industry Radar */}
+      <Card title="Industry Radar" icon="📡" actions={
+        <button onClick={handleScan} disabled={scanning}
+          className="text-[10px] px-2 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 disabled:opacity-50 transition">
+          {scanning ? "Scanning…" : "🔍 Scan"}
+        </button>
+      }>
+        {scanResult && <div className="text-[10px] text-zinc-400 mb-2">{scanResult}</div>}
+        <div className="space-y-1.5 max-h-40 overflow-auto">
+          {radarItems.length === 0 && <div className="text-[10px] text-zinc-500">Click Scan to discover new skills and trends.</div>}
+          {radarItems.slice(0, 8).map((item) => (
+            <a key={item.id} href={item.url} target="_blank" rel="noopener noreferrer"
+              className="block rounded-lg bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+              <div className="text-[10px] text-white hover:underline">{item.title} ↗</div>
+              {item.summary && <div className="text-[9px] text-zinc-500 mt-0.5 line-clamp-1">{item.summary}</div>}
+            </a>
+          ))}
+        </div>
+      </Card>
+
+      {/* Suggestions */}
+      {suggestions.length > 0 && (
+        <Card title="Suggested Skills" icon="💡">
+          <div className="space-y-2">
+            {suggestions.map((s) => (
+              <div key={s.id} className="rounded-xl bg-white/5 p-3">
+                <div className="text-xs font-semibold text-white">{s.proposed_skill_name}</div>
+                <div className="text-[10px] text-zinc-400 mt-0.5">{s.reason_md}</div>
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => handleSuggestionAction(s.id, "saved")}
+                    className="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 text-[10px] hover:bg-emerald-500/30 transition">Save</button>
+                  <button onClick={() => handleSuggestionAction(s.id, "dismissed")}
+                    className="px-2 py-1 rounded-lg bg-white/5 text-zinc-400 text-[10px] hover:bg-white/10 transition">Dismiss</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
