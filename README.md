@@ -39,6 +39,7 @@ My Control Center (MCC) is your personal command center that gives you:
 - 🏃 **[DEPLOY_TO_DOMAIN.md](DEPLOY_TO_DOMAIN.md)** - Streamlined guide to go live fast
 - 📋 **[web/GETTING_STARTED.md](web/GETTING_STARTED.md)** - Detailed checklist with all options
 - 🔌 **[web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md)** - VPS connection specifics
+- 🔧 **[OPENCLAW_SETUP_GUIDE.md](OPENCLAW_SETUP_GUIDE.md)** - Micro-step setup & tunnel troubleshooting
 
 ---
 
@@ -179,13 +180,16 @@ Current version is single-user. Multi-user would require code changes to add use
 - Check build settings in Cloudflare Pages
 - View build logs in Cloudflare dashboard
 
-**More help:** See [web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md) for detailed troubleshooting.
+**More help:**
+- See [OPENCLAW_SETUP_GUIDE.md](OPENCLAW_SETUP_GUIDE.md) for micro-step tunnel troubleshooting
+- See [web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md) for VPS agent connection details
 
 ---
 
 ## Learn More
 
 - **[DEPLOY_TO_DOMAIN.md](DEPLOY_TO_DOMAIN.md)** - Fast track to production
+- **[OPENCLAW_SETUP_GUIDE.md](OPENCLAW_SETUP_GUIDE.md)** - Micro-step OpenClaw setup & tunnel troubleshooting
 - **[web/GETTING_STARTED.md](web/GETTING_STARTED.md)** - Comprehensive guide
 - **[web/CONNECTING_VPS_AGENTS.md](web/CONNECTING_VPS_AGENTS.md)** - VPS setup details
 - **[BLUEPRINT.md](BLUEPRINT.md)** - Full technical architecture
