@@ -1,3 +1,4 @@
+export const runtime = "edge";
 // web/app/api/debug/kv/route.ts
 
 

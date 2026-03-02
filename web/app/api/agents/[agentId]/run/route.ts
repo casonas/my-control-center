@@ -1,3 +1,4 @@
+export const runtime = "edge";
 
 import { getSession } from "@/lib/auth";
 

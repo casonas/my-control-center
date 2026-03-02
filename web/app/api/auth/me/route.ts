@@ -1,3 +1,4 @@
+export const runtime = "edge";
 // web/app/api/auth/me/route.ts
 //
 // Works on Cloudflare Pages edge workers AND a plain Node.js VPS.

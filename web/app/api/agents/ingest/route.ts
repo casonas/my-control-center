@@ -1,3 +1,4 @@
+export const runtime = "edge";
 
 
 /** Read an env var from process.env. */

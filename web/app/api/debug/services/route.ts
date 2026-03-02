@@ -1,3 +1,4 @@
+export const runtime = "edge";
 
 
 type EnvLike = Record<string, unknown>;

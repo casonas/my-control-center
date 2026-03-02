@@ -1,3 +1,4 @@
+export const runtime = "edge";
 
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 

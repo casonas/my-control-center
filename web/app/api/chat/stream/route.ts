@@ -1,3 +1,4 @@
+export const runtime = "edge";
 // web/app/api/chat/stream/route.ts
 
 import { withMutatingAuth } from "@/lib/mutatingAuth";
