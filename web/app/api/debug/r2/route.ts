@@ -1,7 +1,6 @@
-// web/app/api/debug/r2/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-
 export const runtime = "edge";
+// web/app/api/debug/r2/route.ts
+
 
 type EnvLike = Record<string, unknown>;
 
@@ -30,8 +29,7 @@ async function streamToText(stream: ReadableStream<Uint8Array>) {
 }
 
 export async function GET() {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+  const e: EnvLike = {};
 
   const FILES = e["FILES"] as unknown as R2Like | undefined;
   if (!FILES) {

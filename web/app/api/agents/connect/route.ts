@@ -1,9 +1,6 @@
 export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
-
-type EnvLike = Record<string, unknown>;
 
 /**
  * POST /api/agents/connect
@@ -40,9 +37,7 @@ export async function POST(req: Request) {
 
     // Try to forward to VPS if configured
     try {
-      const { env } = getRequestContext();
-      const e = env as EnvLike;
-      const upstream = e["MCC_VPS_CONNECT_URL"];
+      const upstream = process.env["MCC_VPS_CONNECT_URL"];
 
       if (typeof upstream === "string" && upstream) {
         const upstreamRes = await fetch(upstream, {

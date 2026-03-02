@@ -1,9 +1,6 @@
 export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
-
-type EnvLike = Record<string, unknown>;
 
 /**
  * POST /api/agents/scan
@@ -41,9 +38,7 @@ export async function POST(req: Request) {
 
     // Try to forward directly to VPS for immediate execution
     try {
-      const { env } = getRequestContext();
-      const e = env as EnvLike;
-      const upstream = e["MCC_VPS_SCAN_URL"];
+      const upstream = process.env["MCC_VPS_SCAN_URL"];
 
       if (typeof upstream === "string" && upstream) {
         const upstreamRes = await fetch(upstream, {
@@ -72,32 +67,6 @@ export async function POST(req: Request) {
       }
     } catch {
       // VPS unreachable — queue it instead
-    }
-
-    // Fallback: queue as an agent_run so the runner picks it up
-    try {
-      const { env } = getRequestContext();
-      const e = env as EnvLike;
-
-      type D1Stmt = { bind: (...args: unknown[]) => D1Stmt; run: () => Promise<unknown> };
-      type D1Like = { prepare: (sql: string) => D1Stmt };
-
-      const DB = e["DB"] as unknown as D1Like | undefined;
-      if (DB) {
-        const runId = `scan_${crypto.randomUUID().slice(0, 12)}`;
-        const taskPayload = JSON.stringify({ type: "web_scan", query, scope });
-
-        await DB.prepare(
-          `INSERT INTO agent_runs (id, user_id, agent_id, prompt, status, created_at)
-           VALUES (?, ?, ?, ?, 'queued', datetime('now'))`
-        )
-          .bind(runId, session.user_id, body.agentId, taskPayload)
-          .run();
-
-        return Response.json({ ok: true, runId, status: "queued" });
-      }
-    } catch {
-      // DB not available
     }
 
     return Response.json({ ok: true, runId: `local_${Date.now()}`, status: "queued" });

@@ -1,9 +1,9 @@
+export const runtime = "edge";
 // web/app/api/auth/logout/route.ts
 //
 // Works on Cloudflare Pages edge workers AND a plain Node.js VPS.
 // No D1 required — just clears the signed cookie.
 //
-export const runtime = "edge";
 
 import { destroySession } from "@/lib/auth";
 

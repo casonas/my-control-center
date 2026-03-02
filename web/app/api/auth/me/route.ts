@@ -1,9 +1,9 @@
+export const runtime = "edge";
 // web/app/api/auth/me/route.ts
 //
 // Works on Cloudflare Pages edge workers AND a plain Node.js VPS.
 // No D1 or getRequestContext() required — validates the stateless signed cookie.
 //
-export const runtime = "edge";
 
 import { getSession } from "@/lib/auth";
 

@@ -1,7 +1,6 @@
-// web/app/api/debug/kv/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-
 export const runtime = "edge";
+// web/app/api/debug/kv/route.ts
+
 
 type EnvLike = Record<string, unknown>;
 
@@ -12,8 +11,7 @@ type KVLike = {
 };
 
 export async function GET() {
-  const { env } = getRequestContext();
-  const e = env as EnvLike;
+  const e: EnvLike = {};
 
   const CACHE = e["CACHE"] as unknown as KVLike | undefined;
   if (!CACHE) {

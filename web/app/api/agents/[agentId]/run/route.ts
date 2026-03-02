@@ -1,14 +1,9 @@
 export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { getSession } from "@/lib/auth";
 
 function getD1(): D1Like | undefined {
-  try {
-    return (getRequestContext().env as Record<string, unknown>)["DB"] as D1Like | undefined;
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 type D1Stmt = {
