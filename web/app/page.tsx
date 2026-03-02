@@ -22,6 +22,7 @@ import {
   setWorkspace,
   setLastSessionForAgent,
 } from "@/lib/workspace";
+import { useChatScroll } from "@/hooks/useChatScroll";
 
 function cx(...c: (string | false | undefined | null)[]) {
   return c.filter(Boolean).join(" ");
@@ -161,8 +162,8 @@ export default function Home() {
   const [suggestedText, setSuggestedText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const [themeAccent, setThemeAccent] = useState(THEME_COLORS.DEFAULT);
+  const { scrollRef: chatScrollRef, atBottom: chatAtBottom, unreadCount: chatUnread, jumpToBottom: chatJumpToBottom, snapToBottom: chatSnapToBottom, onNewMessage: chatOnNewMessage, onStreamDelta: chatOnStreamDelta } = useChatScroll();
 
   // Per-agent message cache — survives agent switching
   const chatCacheRef = useRef<Record<string, { msgs: Msg[]; convId: string | null }>>({});
@@ -267,6 +268,7 @@ export default function Home() {
       : [activeAgentId];
 
     setMessages((m) => [...m, { role: "user", content: userText }, { role: "agent", content: "" }]);
+    chatOnNewMessage();
     setBusy(true);
     try {
       // Pass session + agent routing headers for Telegram-speed dispatch
@@ -297,6 +299,7 @@ export default function Home() {
               if (last?.role === "agent") last.content += clean;
               return copy;
             });
+            chatOnStreamDelta();
           }
         },
         undefined,
@@ -321,8 +324,8 @@ export default function Home() {
 
   const clearSuggestion = useCallback(() => setSuggestedText(""), []);
 
-  // Auto-scroll chat
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Snap chat to bottom when switching agents (messages replaced)
+  useEffect(() => { chatSnapToBottom(); }, [activeAgentId, chatSnapToBottom]);
 
   // Keyboard shortcut: Cmd+K for search
   useEffect(() => {
@@ -654,8 +657,8 @@ export default function Home() {
 
     return (
       <section className={cx("glass-light rounded-2xl flex flex-col min-h-[60vh] lg:min-h-[75vh]", glowMap[activeTab])}>
-        {/* Chat header */}
-        <div className="p-3 border-b border-white/5 flex items-center justify-between">
+        {/* A) Sticky header */}
+        <div className="shrink-0 p-3 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base">{activeAgent?.emoji || "🤖"}</span>
             <div>
@@ -676,8 +679,8 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 p-4 overflow-auto space-y-3">
+        {/* B) Scrollable messages */}
+        <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
           {messages.length === 0 && (
             <div className="text-center py-8 animate-fade-in" role="status">
               <div className="text-3xl mb-3">{tabMeta.icon}</div>
@@ -721,10 +724,21 @@ export default function Home() {
               {error}
             </div>
           )}
-          <div ref={chatEndRef} />
         </div>
 
-        {/* Input — decoupled from parent state to prevent typing lag */}
+        {/* Jump to latest indicator */}
+        {!chatAtBottom && messages.length > 0 && (
+          <div className="shrink-0 flex justify-center -mt-10 relative z-10 pointer-events-none">
+            <button
+              onClick={chatJumpToBottom}
+              className="pointer-events-auto rounded-full bg-white/10 backdrop-blur border border-white/10 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/20 transition shadow-lg flex items-center gap-1.5"
+            >
+              ↓ Jump to latest{chatUnread > 0 && <span className="bg-indigo-500 text-white rounded-full px-1.5 text-[10px] font-semibold">{chatUnread}</span>}
+            </button>
+          </div>
+        )}
+
+        {/* C) Sticky input */}
         <MessageInput
           onSend={send}
           busy={busy}
