@@ -2,7 +2,24 @@ export const runtime = "edge";
 
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type EnvLike = Record<string, unknown>;
+/** Read an env var from process.env first, then Cloudflare bindings. */
+function getEnv(name: string): string | undefined {
+  if (process.env[name]) return process.env[name];
+  try {
+    const val = (getRequestContext().env as Record<string, unknown>)[name];
+    return typeof val === "string" ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getD1(): D1Like | undefined {
+  try {
+    return (getRequestContext().env as Record<string, unknown>)["DB"] as D1Like | undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // D1 minimal types
 type D1Stmt = {
@@ -47,17 +64,14 @@ export async function POST(req: Request) {
 
     const token = auth.slice(7);
 
-    const { env } = getRequestContext();
-    const e = env as EnvLike;
-
-    const expected = e["MCC_RUNNER_TOKEN"];
-    if (typeof expected !== "string" || !expected) {
+    const expected = getEnv("MCC_RUNNER_TOKEN");
+    if (!expected) {
       return json(500, { ok: false, requestId, error: "MCC_RUNNER_TOKEN missing" });
     }
     if (token !== expected) return unauthorized(requestId);
 
-    const DB = e["DB"] as unknown as D1Like | undefined;
-    if (!DB) return json(500, { ok: false, requestId, error: "DB missing" });
+    const DB = getD1();
+    if (!DB) return json(200, { ok: true, requestId, claimed: false, reason: "no-db" });
 
     // Optional body (runnerId is informational only; not stored without schema change)
     let runnerId = "unknown-runner";

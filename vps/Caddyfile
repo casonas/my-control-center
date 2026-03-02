@@ -1,0 +1,36 @@
+# Caddyfile — automatic HTTPS for the MCC dashboard on your VPS.
+#
+# Caddy handles SSL cert renewal automatically (Let's Encrypt).
+# No certbot, no cronjobs, no manual renewal needed.
+#
+# Install Caddy:
+#   sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+#   curl -1sLf 'https://dl.cloudflare.com/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+#   curl -1sLf 'https://dl.cloudflare.com/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+#   sudo apt update && sudo apt install caddy
+#
+# Configure:
+#   sudo nano /etc/caddy/Caddyfile   ← paste the block below (replace the domain)
+#   sudo systemctl reload caddy
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTION A — You have a domain (recommended, gives you free HTTPS)
+#
+# Replace "dashboard.yourdomain.com" with your actual subdomain.
+# In Cloudflare DNS: add an A record → your VPS IP, orange-cloud OFF
+# (orange-cloud ON also works but adds Cloudflare proxy latency).
+# ─────────────────────────────────────────────────────────────────────────────
+
+dashboard.yourdomain.com {
+    reverse_proxy localhost:3000
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTION B — No domain yet, access by VPS IP on port 3000 directly
+#
+# Delete the block above and leave Caddy unconfigured, then access the
+# dashboard at http://YOUR_VPS_IP:3000 (no HTTPS until you add a domain).
+#
+# Make sure port 3000 is open in your VPS firewall:
+#   sudo ufw allow 3000/tcp
+# ─────────────────────────────────────────────────────────────────────────────
