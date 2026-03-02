@@ -10,7 +10,7 @@ import {
   getWatchlist,
   getResearch, toggleArticleRead, saveArticleNotes,
 } from "@/lib/store";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, apiPatch } from "@/lib/api";
 
 /* ────────── helpers ────────── */
 function cx(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(" "); }
@@ -382,58 +382,133 @@ function SchoolWidgets({ assignments, notes, refresh }: {
 /* ═══════════════════════════════════════════════════════
    JOBS — LinkedIn-style feed
    ═══════════════════════════════════════════════════════ */
-function JobsWidgets({ jobs, refresh }: { jobs: JobPosting[]; refresh: () => void }) {
+function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
   const [location, setLocation] = useState("");
   const [tags, setTags] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<string | null>(null);
 
-  const applied = jobs.filter((j) => j.applied).length;
-  const saved = jobs.filter((j) => !j.applied).length;
+  // API-backed data
+  interface ApiJob {
+    id: string; title: string; company: string; location?: string;
+    url: string; status: string; posted_at?: string; fetched_at: string;
+    remote?: number; tags_json?: string; notes?: string;
+  }
+  const [apiJobs, setApiJobs] = useState<ApiJob[]>([]);
+  const [pipeline, setPipeline] = useState<Record<string, number>>({});
+  interface ApiCompany { id: string; name: string; website_url?: string; linkedin_url?: string; notes?: string }
+  const [companies, setCompanies] = useState<ApiCompany[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+
+  const loadJobs = useCallback(async (status: string) => {
+    try {
+      const data = await apiGet<{ items: ApiJob[] }>(`/jobs/feed?status=${status}&limit=50`);
+      if (data.items) { setApiJobs(data.items); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadPipeline = useCallback(async () => {
+    try {
+      const data = await apiGet<{ pipeline: Record<string, number> }>("/jobs/pipeline");
+      if (data.pipeline) setPipeline(data.pipeline);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadCompanies = useCallback(async () => {
+    try {
+      const data = await apiGet<{ companies: ApiCompany[] }>("/companies");
+      if (data.companies) setCompanies(data.companies);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => { loadJobs(statusFilter); loadPipeline(); loadCompanies(); }, [statusFilter, loadJobs, loadPipeline, loadCompanies]);
+
+  async function handleRefresh() {
+    setRefreshing(true); setRefreshResult(null);
+    try {
+      const data = await apiPost<{ ok: boolean; newJobs?: number; error?: string }>("/jobs/refresh", {});
+      setRefreshResult(data.ok ? `Found ${data.newJobs || 0} new jobs` : (data.error || "Failed"));
+      loadJobs(statusFilter); loadPipeline();
+    } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleStatusChange(jobId: string, newStatus: string) {
+    try { await apiPatch(`/jobs/${jobId}`, { status: newStatus }); loadJobs(statusFilter); loadPipeline(); }
+    catch { /* fallback */ toggleJobApplied(jobId); refresh(); }
+  }
 
   function handleAdd() {
     if (!title.trim()) return;
     saveJob({ title: title.trim(), company: company.trim(), location: location.trim(), tags: tags.split(",").map((t: string) => t.trim()).filter(Boolean) });
     setTitle(""); setCompany(""); setLocation(""); setTags(""); setShowAdd(false);
-    refresh();
+    refresh(); loadJobs(statusFilter);
   }
+
+  // Display items
+  const displayJobs = hasApi ? apiJobs : localJobs.map((j) => ({
+    id: j.id, title: j.title, company: j.company, location: j.location,
+    url: "", status: j.applied ? "applied" : "saved", posted_at: "", fetched_at: "",
+    tags_json: JSON.stringify(j.tags),
+  }));
+
+  const pSaved = pipeline.saved || pipeline.new || 0;
+  const pNew = pipeline.new || 0;
+  const pApplied = pipeline.applied || 0;
+  const pInterview = pipeline.interview || 0;
+  const pOffer = pipeline.offer || 0;
+
+  const statuses = ["all", "new", "saved", "applied", "interview", "offer", "rejected", "dismissed"];
 
   return (
     <div className="space-y-3">
-      {/* Stats */}
       <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="💼" value={jobs.length} label="Total" />
-        <StatBox icon="✅" value={applied} label="Applied" />
-        <StatBox icon="📌" value={saved} label="Saved" />
+        <StatBox icon="💼" value={displayJobs.length} label="Total" />
+        <StatBox icon="✅" value={pApplied} label="Applied" />
+        <StatBox icon="🆕" value={pNew + pSaved} label="New/Saved" />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-medium hover:bg-emerald-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh Feed"}
+        </button>
+        {refreshResult && <span className="text-[10px] text-zinc-400">{refreshResult}</span>}
       </div>
 
       <AgentStatus verb="scanning for new cybersecurity postings" />
 
-      {/* Application pipeline */}
+      {/* Pipeline */}
       <Card title="Pipeline" icon="📊">
         <div className="flex gap-1">
-          <div className="flex-1 text-center rounded-lg bg-emerald-500/10 py-2">
-            <div className="text-sm font-bold text-emerald-400">{saved}</div>
-            <div className="text-[10px] text-zinc-400">Saved</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-cyan-500/10 py-2">
-            <div className="text-sm font-bold text-cyan-400">{applied}</div>
-            <div className="text-[10px] text-zinc-400">Applied</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-violet-500/10 py-2">
-            <div className="text-sm font-bold text-violet-400">0</div>
-            <div className="text-[10px] text-zinc-400">Interview</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-amber-500/10 py-2">
-            <div className="text-sm font-bold text-amber-400">0</div>
-            <div className="text-[10px] text-zinc-400">Offer</div>
-          </div>
+          {[
+            { label: "New", val: pNew, color: "blue" },
+            { label: "Saved", val: pSaved, color: "emerald" },
+            { label: "Applied", val: pApplied, color: "cyan" },
+            { label: "Interview", val: pInterview, color: "violet" },
+            { label: "Offer", val: pOffer, color: "amber" },
+          ].map((s) => (
+            <div key={s.label} className={`flex-1 text-center rounded-lg bg-${s.color}-500/10 py-2`}>
+              <div className={`text-sm font-bold text-${s.color}-400`}>{s.val}</div>
+              <div className="text-[10px] text-zinc-400">{s.label}</div>
+            </div>
+          ))}
         </div>
       </Card>
+
+      {/* Status filter */}
+      <div className="flex gap-1 overflow-auto pb-1">
+        {statuses.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} className={cx(
+            "px-2.5 py-1 rounded-lg text-[10px] font-medium border transition whitespace-nowrap capitalize",
+            statusFilter === s ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{s}</button>
+        ))}
+      </div>
 
       {/* Job Feed */}
       <Card title="Job Feed" icon="📋" actions={
@@ -453,28 +528,66 @@ function JobsWidgets({ jobs, refresh }: { jobs: JobPosting[]; refresh: () => voi
           </div>
         )}
         <div className="space-y-2 max-h-96 overflow-auto">
-          {jobs.map((j) => (
+          {displayJobs.length === 0 && (
+            <div className="text-center py-6 text-xs text-zinc-500">No jobs. Click Refresh Feed to scan.</div>
+          )}
+          {displayJobs.map((j) => {
+            const jobTags: string[] = j.tags_json ? JSON.parse(j.tags_json) : [];
+            return (
             <div key={j.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-white/10 flex items-center justify-center text-sm font-bold text-white shrink-0">
                   {j.company.charAt(0)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-white">{j.title}</div>
-                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location}</div>
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {j.tags.map((t) => <Badge key={t} color="emerald">{t}</Badge>)}
+                  <a href={j.url || "#"} target="_blank" rel="noopener noreferrer"
+                    className="text-xs font-semibold text-white hover:underline">
+                    {j.title} {j.url ? "↗" : ""}
+                  </a>
+                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    <Badge color={j.status === "applied" ? "cyan" : j.status === "interview" ? "violet" : "emerald"}>{j.status}</Badge>
+                    {jobTags.map((t: string) => <Badge key={t} color="zinc">{t}</Badge>)}
+                  </div>
+                  {/* LinkedIn links */}
+                  <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition">
+                    <a href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(j.title + " " + j.company)}`}
+                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🔗 LinkedIn Jobs</a>
+                    <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(j.company)}`}
+                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🏢 Company</a>
                   </div>
                 </div>
-                <button
-                  onClick={() => { toggleJobApplied(j.id); refresh(); }}
-                  className={cx("shrink-0 px-2 py-1 rounded-lg text-[10px] font-medium border transition",
-                    j.applied ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 text-zinc-400 border-white/10 hover:border-emerald-500/30"
+                <div className="flex flex-col gap-1 shrink-0">
+                  {j.status !== "applied" && (
+                    <button onClick={() => hasApi ? handleStatusChange(j.id, "applied") : (() => { toggleJobApplied(j.id); refresh(); })()}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">Apply</button>
                   )}
-                >
-                  {j.applied ? "✓ Applied" : "Apply"}
-                </button>
+                  {j.status !== "saved" && j.status !== "applied" && (
+                    <button onClick={() => handleStatusChange(j.id, "saved")}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">Save</button>
+                  )}
+                  {j.status !== "dismissed" && (
+                    <button onClick={() => handleStatusChange(j.id, "dismissed")}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-white/5 text-zinc-500 hover:bg-white/10 transition">✕</button>
+                  )}
+                </div>
               </div>
+            </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Companies Watchlist */}
+      <Card title="Companies to Watch" icon="🏢">
+        <div className="space-y-1.5 max-h-40 overflow-auto">
+          {companies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
+          {companies.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
+              <span className="text-xs text-white flex-1">{c.name}</span>
+              {c.website_url && <a href={c.website_url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-zinc-400 hover:text-white">🌐</a>}
+              <a href={c.linkedin_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.name)}`}
+                target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">LinkedIn</a>
             </div>
           ))}
         </div>
