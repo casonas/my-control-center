@@ -15,7 +15,6 @@ Features:
 import json
 import subprocess
 import time
-import shlex
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -105,6 +104,12 @@ class InteractiveBridge(BaseHTTPRequestHandler):
             or body.get("agentId", "main")
         )
         message = body.get("message", "")
+
+        # Validate agent_id before sending any headers
+        if not agent_id.replace("-", "").replace("_", "").isalnum():
+            self._json({"error": "Invalid agent ID"}, status=400)
+            return
+
         agent_dir = AGENTS.get(agent_id, AGENTS["main"])["dir"]
 
         # Persistent session management
@@ -120,8 +125,8 @@ class InteractiveBridge(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
-        # shlex.quote prevents shell injection from user input
-        safe_msg = shlex.quote(message)
+        # Using list form (not shell=True) prevents shell injection.
+        # Each argument is passed as-is to execvp, never through a shell.
         cmd = [
             NODE_BIN,
             OPENCLAW_BIN,

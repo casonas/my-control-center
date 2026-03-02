@@ -40,6 +40,8 @@ const THEME_COLORS: Record<string, string> = {
   CYAN: "#06b6d4",
   DEFAULT: "#6366f1",
 };
+const THEME_TAG_RE = /\[THEME:(\w+)\]/;
+const THEME_STRIP_RE = /\[THEME:\w+\]/g;
 
 /* ─────────────────────────────────────────────────────
    MessageInput — Decoupled from parent state so typing
@@ -254,16 +256,15 @@ export default function Home() {
         },
         (delta) => {
           // Parse [THEME:*] UI-Hints from agent output
-          const themeMatch = delta.match(/\[THEME:(\w+)\]/);
+          const themeMatch = delta.match(THEME_TAG_RE);
           if (themeMatch) {
             const key = themeMatch[1].toUpperCase();
             if (THEME_COLORS[key]) {
               setThemeAccent(THEME_COLORS[key]);
-              document.documentElement.style.setProperty("--accent-glow", THEME_COLORS[key]);
             }
           }
           // Strip theme tags from visible content
-          const clean = delta.replace(/\[THEME:\w+\]/g, "");
+          const clean = delta.replace(THEME_STRIP_RE, "");
           if (clean) {
             setMessages((m) => {
               const copy = [...m];

@@ -22,6 +22,11 @@ export default function RootLayout({
       </head>
       <body className="antialiased">
         {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `if("serviceWorker"in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}`,
+          }}
+        />
       </body>
     </html>
   );
