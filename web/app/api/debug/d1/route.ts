@@ -1,7 +1,6 @@
 export const runtime = "edge";
 
-
-type EnvLike = Record<string, unknown>;
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
 type D1Like = {
   prepare: (sql: string) => {
@@ -10,29 +9,17 @@ type D1Like = {
 };
 
 export async function GET() {
-  const e: EnvLike = {};
+  const { env } = getRequestContext();
+  const keys = Object.keys(env ?? {});
 
-  // Show what bindings exist (safe for debug route; remove later)
-  const keys = Object.keys(e);
-
-  const DB = e["DB"] as unknown as D1Like | undefined;
+  const DB = (env as any).DB as D1Like | undefined;
   if (!DB) {
     return Response.json(
-      {
-        ok: false,
-        error: "DB binding not found on env",
-        env_keys: keys
-      },
+      { ok: false, error: "DB binding not found on env", env_keys: keys },
       { status: 500 }
     );
   }
 
   const row = await DB.prepare("SELECT COUNT(*) as n FROM sessions").first<{ n: number }>();
-
-  return Response.json({
-    ok: true,
-    sessions_count: row?.n ?? null,
-    env_keys: keys
-  });
+  return Response.json({ ok: true, sessions_count: row?.n ?? null, env_keys: keys });
 }
-//redploy
