@@ -256,7 +256,6 @@ export async function runSportsRefresh(db: D1Database, userId: string, league = 
   const jobKey = `sports_refresh_${league}_${userId}`;
 
   try {
-    const now = new Date().toISOString();
     // MVP: Sports data provider placeholder — update cron_runs to track refresh attempts
     await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: 0, tookMs: Date.now() - start });
     return { ok: true, league, games: 0, tookMs: Date.now() - start, source: "pending" };

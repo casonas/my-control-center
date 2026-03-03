@@ -1845,6 +1845,8 @@ function SettingsWidgets() {
         </div>
       </Card>
 
+      <AutonomyPanel />
+
       <Card title="About" icon="ℹ️">
         <div className="text-xs text-zinc-400 space-y-1">
           <div><strong className="text-zinc-300">My Control Center</strong> v0.1.0</div>
@@ -1853,5 +1855,111 @@ function SettingsWidgets() {
         </div>
       </Card>
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUTONOMY PANEL — Cron job status + manual triggers
+   ═══════════════════════════════════════════════════════ */
+function AutonomyPanel() {
+  const [jobs, setJobs] = useState<{
+    jobName: string; lastRunAt: string | null; status: string | null;
+    itemsProcessed: number; tookMs: number | null; error: string | null;
+    cron: string | null; description: string | null;
+  }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
+  const [expandedError, setExpandedError] = useState<string | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiGet<{ jobs: typeof jobs }>("/admin/cron");
+      setJobs(data.jobs || []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const runJob = useCallback(async (jobName: string) => {
+    setRunning(jobName);
+    try {
+      await apiPost("/admin/cron", { jobName });
+      await loadStatus();
+    } catch { /* ignore */ }
+    setRunning(null);
+  }, [loadStatus]);
+
+  const statusColor = (s: string | null) => {
+    if (s === "ok" || s === "success") return "emerald";
+    if (s === "partial") return "amber";
+    if (s === "error") return "rose";
+    return "zinc";
+  };
+
+  const fmtTime = (iso: string | null) => {
+    if (!iso) return "Never";
+    try {
+      const d = new Date(iso);
+      const diff = Date.now() - d.getTime();
+      if (diff < 60000) return "Just now";
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+      return d.toLocaleDateString();
+    } catch { return iso; }
+  };
+
+  return (
+    <Card title="Autonomy" icon="⚡" actions={
+      <button onClick={loadStatus} disabled={loading}
+        className="text-[10px] px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 transition disabled:opacity-50">
+        {loading ? "Loading…" : "Refresh"}
+      </button>
+    }>
+      {jobs.length === 0 && !loading ? (
+        <div className="text-xs text-zinc-500 py-2">No cron job data yet. Run a scan first or check D1 connection.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {jobs.map((job) => (
+            <div key={job.jobName} className="rounded-xl bg-white/5 px-3 py-2">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs text-white font-medium">{job.jobName.replace(/_/g, " ")}</span>
+                  {job.cron && <span className="ml-2 text-[10px] text-zinc-500 font-mono">{job.cron}</span>}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Badge color={statusColor(job.status)}>{job.status || "—"}</Badge>
+                  <button
+                    onClick={() => runJob(job.jobName)}
+                    disabled={running === job.jobName}
+                    className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 transition disabled:opacity-50"
+                  >
+                    {running === job.jobName ? "Running…" : "Run"}
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-1 text-[10px] text-zinc-500">
+                <span>Last: {fmtTime(job.lastRunAt)}</span>
+                {job.itemsProcessed > 0 && <span>{job.itemsProcessed} items</span>}
+                {job.tookMs != null && <span>{job.tookMs}ms</span>}
+              </div>
+              {job.description && <div className="text-[10px] text-zinc-600 mt-0.5">{job.description}</div>}
+              {job.error && (
+                <div className="mt-1">
+                  <button onClick={() => setExpandedError(expandedError === job.jobName ? null : job.jobName)}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 transition">
+                    {expandedError === job.jobName ? "▾ Hide error" : "▸ View error"}
+                  </button>
+                  {expandedError === job.jobName && (
+                    <pre className="mt-1 text-[10px] text-rose-400/80 bg-rose-500/5 rounded p-2 overflow-x-auto">{job.error}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
