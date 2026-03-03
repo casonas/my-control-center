@@ -7,17 +7,17 @@ import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 
 type R2BucketLike = {
-  put: (...args: unknown[]) => Promise<unknown>;
-  get: (...args: unknown[]) => Promise<unknown>;
-  delete: (...args: unknown[]) => Promise<unknown>;
+  put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob) => Promise<unknown>;
+  get: (key: string) => Promise<{ body: ReadableStream; httpMetadata?: { contentType?: string } } | null>;
+  delete: (key: string) => Promise<unknown>;
 };
 
 function getR2(): R2BucketLike | null {
   try {
     const { env } = getRequestContext();
-    return (env.FILES as unknown as R2BucketLike) ?? null;
+    const e = env as unknown as { FILES?: R2BucketLike };
+    return e.FILES ?? null;
   } catch {
-    // If not running on Pages/Workers (e.g., local Node), bindings won't exist.
     return null;
   }
 }
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
         {
           ok: false,
           where: "files/upload",
-          hint: "R2 binding (FILES) not available in this runtime. Check Pages bindings."
+          hint: "R2 binding (FILES) not available. Check Pages → Settings → Bindings → R2 bucket name FILES.",
         },
         { status: 400 }
       );
@@ -127,7 +127,6 @@ export async function POST(req: Request) {
       const safeName = body.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
       const storageKey = `${userId}/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${fileId}_${safeName}`;
 
-      // Insert file metadata
       await db
         .prepare(
           `INSERT INTO files (id, user_id, name, mime, size, storage, storage_key, created_at)
@@ -136,7 +135,6 @@ export async function POST(req: Request) {
         .bind(fileId, userId, body.name, body.mime, body.size, storageKey, now.toISOString())
         .run();
 
-      // Link to scope if provided
       if (body.scope?.type && body.scope?.id) {
         const linkId = crypto.randomUUID();
         await db
@@ -152,7 +150,7 @@ export async function POST(req: Request) {
         ok: true,
         fileId,
         storageKey,
-        uploadUrl: `/api/files/${fileId}/upload`
+        uploadUrl: `/api/files/${fileId}/upload`,
       });
     } catch (err) {
       return d1ErrorResponse("POST /api/files", err);
