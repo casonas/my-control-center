@@ -1,25 +1,12 @@
 // web/lib/env.ts — Environment status helper
-//
-// Reads Cloudflare bindings via the well-known globalThis symbol
-// (same pattern as lib/d1.ts).
+
+import { getCfEnv } from "./cloudflare";
 
 interface EnvStatus {
   ok: boolean;
   missing: string[];
   hints: string[];
   bindings: Record<string, boolean>;
-}
-
-function getCfEnv(): Record<string, unknown> | null {
-  try {
-    const sym = Symbol.for("__cloudflare-request-context__");
-    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
-      | { env?: Record<string, unknown> }
-      | undefined;
-    return ctx?.env ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /**

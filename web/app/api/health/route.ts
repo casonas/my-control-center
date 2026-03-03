@@ -1,7 +1,8 @@
 export const runtime = "edge";
 // web/app/api/health/route.ts — Public health check (no auth required)
 
-import { getD1, getCfEnv } from "@/lib/d1";
+import { getD1 } from "@/lib/d1";
+import { getCfEnv } from "@/lib/cloudflare";
 
 export async function GET() {
   const time = new Date().toISOString();

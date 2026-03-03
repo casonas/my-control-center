@@ -1,14 +1,13 @@
 // web/lib/d1.ts — D1 binding helper with graceful fallback
 //
-// WHY THIS WAS FAILING:
-// @cloudflare/next-on-pages is deprecated (use @opennextjs/cloudflare).
-// Its getRequestContext() just reads a well-known globalThis symbol.
-// We read that symbol directly — no import needed, no build warnings.
-//
 // If D1 is still not found the most likely cause is that the D1 binding
 // is not configured in Cloudflare Pages:
 //   Dashboard → Pages → your project → Settings → Functions →
 //   D1 database bindings → Variable name: DB
+
+import { getCfEnv } from "./cloudflare";
+
+export { getCfEnv } from "./cloudflare";
 
 /** Minimal D1 interface — avoids needing @cloudflare/workers-types */
 export interface D1Database {
@@ -34,23 +33,6 @@ export interface D1Result<T = unknown> {
 export interface D1ExecResult {
   count: number;
   duration: number;
-}
-
-/**
- * Reads the Cloudflare env object from the well-known globalThis symbol.
- * This is the same symbol that @cloudflare/next-on-pages getRequestContext()
- * reads, but we access it directly to avoid importing the deprecated package.
- */
-export function getCfEnv(): Record<string, unknown> | null {
-  try {
-    const sym = Symbol.for("__cloudflare-request-context__");
-    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
-      | { env?: Record<string, unknown> }
-      | undefined;
-    return ctx?.env ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /**

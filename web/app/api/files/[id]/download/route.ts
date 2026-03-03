@@ -3,28 +3,7 @@ export const runtime = "edge";
 
 import { withReadAuth } from "@/lib/readAuth";
 import { getD1 } from "@/lib/d1";
-
-type R2ObjectLike = {
-  body: ReadableStream;
-  httpMetadata?: { contentType?: string };
-};
-
-type R2BucketLike = {
-  get: (key: string) => Promise<R2ObjectLike | null>;
-};
-
-function getR2(): R2BucketLike | null {
-  try {
-    const sym = Symbol.for("__cloudflare-request-context__");
-    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
-      | { env?: Record<string, unknown> }
-      | undefined;
-    const e = ctx?.env as unknown as { FILES?: R2BucketLike } | undefined;
-    return e?.FILES ?? null;
-  } catch {
-    return null;
-  }
-}
+import { getR2 } from "@/lib/cloudflare";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   return withReadAuth(async ({ userId }) => {
