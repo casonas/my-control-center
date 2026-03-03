@@ -17,26 +17,27 @@ type R2BucketLike = {
 function getR2(): R2BucketLike | null {
   try {
     const { env } = getRequestContext();
-    return (env.FILES as unknown as R2BucketLike) ?? null;
+    const e = env as unknown as { FILES?: R2BucketLike };
+    return e.FILES ?? null;
   } catch {
     return null;
   }
 }
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(_req: Request, ctx: { params: { id: string } }) {
   return withReadAuth(async ({ userId }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
 
-    const { id } = await ctx.params;
-
     const r2 = getR2();
     if (!r2) {
       return Response.json(
-        { ok: false, where: "files/download", hint: "R2 not configured (FILES binding missing)" },
+        { ok: false, where: "files/download", hint: "R2 binding (FILES) not available. Check Pages bindings." },
         { status: 400 }
       );
     }
+
+    const id = ctx.params.id;
 
     try {
       const file = await db
@@ -44,17 +45,21 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         .bind(id, userId)
         .first<{ storage_key: string; name: string; mime: string }>();
 
-      if (!file) return Response.json({ ok: false, error: "File not found" }, { status: 404 });
+      if (!file) {
+        return Response.json({ ok: false, error: "File not found" }, { status: 404 });
+      }
 
       const obj = await r2.get(file.storage_key);
-      if (!obj) return Response.json({ ok: false, error: "File not found in storage" }, { status: 404 });
+      if (!obj) {
+        return Response.json({ ok: false, error: "File not found in storage" }, { status: 404 });
+      }
 
-      const safeFilename = file.name.replace(/"/g, '\\"');
+      const filename = file.name.replace(/"/g, '\\"');
 
       return new Response(obj.body, {
         headers: {
           "Content-Type": file.mime || obj.httpMetadata?.contentType || "application/octet-stream",
-          "Content-Disposition": `attachment; filename="${safeFilename}"`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "private, max-age=300",
         },
       });
