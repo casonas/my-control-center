@@ -32,29 +32,36 @@ Cloudflare Pages + connecting your VPS agents.  Covers what to do
 
 ### Why D1 Connection Was Failing
 
-`@cloudflare/next-on-pages` is **deprecated** (Cloudflare now recommends
-`@opennextjs/cloudflare`).  Its `getRequestContext()` function works by
-reading a well-known symbol on `globalThis`:
+**The #1 root cause: `wrangler.toml` was missing `pages_build_output_dir`.**
+
+Without this single line, Cloudflare Pages **completely ignores the
+entire `wrangler.toml` file** — including all D1, KV, R2, and AI
+bindings defined in it.  The Cloudflare build log even told us:
 
 ```
-globalThis[Symbol.for("__cloudflare-request-context__")]
+A Wrangler configuration file was found but it does not appear to be
+valid. Did you mean to use wrangler.toml to configure Pages? If so,
+then make sure the file is valid and contains the `pages_build_output_dir`
+property. Skipping file and continuing.
 ```
 
-This symbol is set by the Cloudflare Pages adapter at **runtime**.  There
-are two reasons it might not contain your D1 binding:
+**The fix:** Add this line to `wrangler.toml`:
+```toml
+pages_build_output_dir = ".vercel/output/static"
+```
 
-1. **D1 binding not configured in Cloudflare Pages dashboard** — this is
-   the #1 cause.  Even if `wrangler.toml` lists the binding, **Pages
-   ignores wrangler.toml for bindings**.  You must configure them in the
-   dashboard UI (see [Section 3.3](#33-add-d1-binding-critical)).
+Now Cloudflare Pages reads the file and automatically configures all
+bindings (DB, CACHE, FILES, AI) at runtime.
 
-2. **The adapter isn't running** — if the build/deploy process changed
-   and the Cloudflare Pages adapter doesn't wrap Next.js properly, the
-   `globalThis` symbol is never set.
+**Secondary cause: `@cloudflare/next-on-pages` is deprecated.**
 
-**Our fix:** We now read the `globalThis` symbol directly (the exact same
-thing `getRequestContext()` did internally) and log a clear warning when
-the `DB` binding is missing, listing what bindings *are* available.
+The old `getRequestContext()` function imported from this package only
+exports ESM — no CommonJS `require()` support.  Any file using
+`require("@cloudflare/next-on-pages")` would fail at build time with
+"Package path . is not exported".  We removed all imports of this
+deprecated package and now read the Cloudflare runtime context directly
+via `globalThis[Symbol.for("__cloudflare-request-context__")]` — the
+exact same mechanism the deprecated package used internally.
 
 ---
 
