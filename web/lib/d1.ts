@@ -3,6 +3,8 @@
 // On Cloudflare Pages: uses getRequestContext() to access env.DB
 // On local dev (next dev): returns null (routes should handle gracefully)
 
+import { getRequestContext } from "@cloudflare/next-on-pages";
+
 /** Minimal D1 interface — avoids needing @cloudflare/workers-types */
 export interface D1Database {
   prepare(query: string): D1PreparedStatement;
@@ -29,19 +31,21 @@ export interface D1ExecResult {
   duration: number;
 }
 
+type EnvWithDB = {
+  DB?: unknown;
+};
+
 /**
  * Try to obtain the D1 database binding.
  * Returns null when running outside Cloudflare (local next dev).
  */
 export function getD1(): D1Database | null {
   try {
-    // Dynamic import to avoid build errors in non-Cloudflare environments
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getRequestContext } = require("@cloudflare/next-on-pages");
-    const ctx = getRequestContext();
-    const db = ctx?.env?.DB;
-    return db ?? null;
+    const { env } = getRequestContext();
+    const maybe = (env as unknown as EnvWithDB | undefined)?.DB;
+    return (maybe as unknown as D1Database) ?? null;
   } catch {
+    // getRequestContext() throws outside Pages runtime (ex: local next dev)
     return null;
   }
 }
@@ -49,9 +53,7 @@ export function getD1(): D1Database | null {
 /** Get D1 or throw a descriptive 500 error. */
 export function requireD1(): D1Database {
   const db = getD1();
-  if (!db) {
-    throw new D1UnavailableError();
-  }
+  if (!db) throw new D1UnavailableError();
   return db;
 }
 
@@ -65,9 +67,11 @@ export class D1UnavailableError extends Error {
 /** Standard JSON error response for D1 issues. */
 export function d1ErrorResponse(where: string, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  const hint = err instanceof D1UnavailableError
-    ? "D1 binding (env.DB) not found. Are you running on Cloudflare Pages? Check wrangler.toml [[d1_databases]] binding."
-    : "Check D1 migration has been applied: wrangler d1 execute mcc-store --file=./cloudflare/migrations/0001_chat_sessions.sql";
+  const hint =
+    err instanceof D1UnavailableError
+      ? "D1 binding (env.DB) not found. Check Pages bindings: D1 database binding name must be DB."
+      : "Confirm D1 schema applied to REMOTE database: npx wrangler d1 execute mcc-store --remote --file=cloudflare/d1-schema.sql";
+
   console.error(`[${where}] D1 error:`, message);
   return Response.json({ error: message, where, hint }, { status: 500 });
 }
