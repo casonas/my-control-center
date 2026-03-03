@@ -990,7 +990,7 @@ function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refr
 /* ═══════════════════════════════════════════════════════
    SPORTS — ESPN style
    ═══════════════════════════════════════════════════════ */
-function SportsWidgets(_: { refresh: () => void }) {
+function SportsWidgets(_props: { refresh: () => void }) {
   const [league, setLeague] = useState("nba");
   const leagues = [
     { key: "nba", label: "NBA" }, { key: "nfl", label: "NFL" },
@@ -1198,7 +1198,7 @@ function SportsWidgets(_: { refresh: () => void }) {
 /* ═══════════════════════════════════════════════════════
    STOCKS — Yahoo Finance style
    ═══════════════════════════════════════════════════════ */
-function StocksWidgets(_: { refresh: () => void }) {
+function StocksWidgets(_props: { refresh: () => void }) {
   // API-backed state
   interface WlItem { ticker: string; display_name?: string }
   interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; asof?: string; source?: string }

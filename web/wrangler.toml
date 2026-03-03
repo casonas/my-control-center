@@ -1,27 +1,30 @@
 # ─────────────────────────────────────────────────────
-# Cloudflare Deployment Configuration
+# Cloudflare Pages Configuration
 # ─────────────────────────────────────────────────────
+#
+# ⚠️  CRITICAL: Without `pages_build_output_dir`, Cloudflare Pages
+#     IGNORES THIS ENTIRE FILE — including all bindings below.
+#     This was the root cause of D1 not connecting at runtime.
 #
 # FREE TIER capabilities used:
 #
 #   Pages       — unlimited bandwidth, 500 builds/month
-#   Workers     — 100k requests/day (cron triggers for fetching jobs/news/scores)
-#   KV          — 100k reads/day, 1k writes/day, 1GB storage (API response cache)
 #   D1 (SQLite) — 5M row reads/day, 100k writes/day, 5GB (replace localStorage)
+#   KV          — 100k reads/day, 1k writes/day, 1GB storage (API response cache)
 #   R2          — 10GB storage (file uploads, exports)
 #   Workers AI  — free inference calls (embeddings for vector search)
 #   Tunnels     — free (reverse proxy to OpenClaw VPS)
 #   Access      — free for ≤50 users (zero-trust auth layer)
 #
-# Deployment:
-#   1. `npm run pages:build` → builds Next.js for Cloudflare Pages
-#   2. `npx wrangler pages deploy` → deploys to pages
-#   3. Cron workers run on schedule to fetch fresh data
-#
 # ─────────────────────────────────────────────────────
 
 name = "my-control-center"
 compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ─── This line makes Cloudflare Pages read this file ───
+# Without it, ALL bindings below are ignored and D1/KV/R2 won't work.
+pages_build_output_dir = ".vercel/output/static"
 
 # ─── D1 Database (cross-device persistent storage) ───
 # SETUP: Run `wrangler d1 create mcc-store` and paste the database_id below
@@ -36,7 +39,6 @@ database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"  # REQUIRED: paste output o
 binding = "CACHE"
 id = "d5ece8caf7b74fa0883ae71f3af2f265"  # REQUIRED: paste output of `wrangler kv namespace create CACHE`
 
-
 # ─── R2 Bucket (file storage) ───
 [[r2_buckets]]
 binding = "FILES"
@@ -45,16 +47,6 @@ bucket_name = "mcc-files"
 # ─── Workers AI (embeddings for vector search) ───
 [ai]
 binding = "AI"
-
-# ─── Cron Triggers (free-tier scheduled workers) ───
-# These workers fetch fresh data periodically
-[triggers]
-crons = [
-  "0 */4 * * *",   # Every 4 hours — fetch job postings
-  "0 */2 * * *",   # Every 2 hours — fetch news & research
-  "*/30 * * * *",  # Every 30 min — fetch sports scores (game days)
-  "*/15 * * * *",  # Every 15 min — fetch stock data (market hours)
-]
 
 # ─── Environment Variables ───
 [vars]

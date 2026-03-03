@@ -4,7 +4,6 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "My Control Center",
   description: "Your AI-powered life dashboard — school, jobs, skills, sports, stocks, and research in one sleek command center.",
-  themeColor: "#050507",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
@@ -17,6 +16,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: "cover",
+  themeColor: "#050507",
 };
 
 export default function RootLayout({

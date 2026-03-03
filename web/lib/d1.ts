@@ -1,6 +1,13 @@
 // web/lib/d1.ts — D1 binding helper with graceful fallback
+//
+// If D1 is still not found the most likely cause is that the D1 binding
+// is not configured in Cloudflare Pages:
+//   Dashboard → Pages → your project → Settings → Functions →
+//   D1 database bindings → Variable name: DB
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getCfEnv } from "./cloudflare";
+
+export { getCfEnv } from "./cloudflare";
 
 /** Minimal D1 interface — avoids needing @cloudflare/workers-types */
 export interface D1Database {
@@ -29,16 +36,31 @@ export interface D1ExecResult {
 }
 
 /**
- * Returns null when not running on Cloudflare (e.g., local next dev).
+ * Returns null when not running on Cloudflare (e.g., local next dev)
+ * or when the D1 binding named "DB" is not configured.
  */
 export function getD1(): D1Database | null {
-  try {
-    const { env } = getRequestContext();
-    const maybe = env as unknown as { DB?: D1Database };
-    return maybe.DB ?? null;
-  } catch {
-    return null;
+  const env = getCfEnv();
+  if (!env) return null;
+  const db = env["DB"] as D1Database | undefined;
+  if (!db) {
+    console.warn(
+      "[getD1] Cloudflare env found but DB binding is missing. " +
+        "Go to Pages → Settings → Functions → D1 database bindings and add variable name DB. " +
+        "Available bindings: " +
+        Object.keys(env).join(", ")
+    );
   }
+  return db ?? null;
+}
+
+/**
+ * Returns D1 or throws D1UnavailableError — use in routes that require it.
+ */
+export function requireD1(): D1Database {
+  const db = getD1();
+  if (!db) throw new D1UnavailableError();
+  return db;
 }
 
 export class D1UnavailableError extends Error {

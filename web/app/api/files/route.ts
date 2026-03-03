@@ -1,26 +1,10 @@
 export const runtime = "edge";
 // web/app/api/files/route.ts — List files + upload URL creation
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withReadAuth } from "@/lib/readAuth";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
-
-type R2BucketLike = {
-  put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob) => Promise<unknown>;
-  get: (key: string) => Promise<{ body: ReadableStream; httpMetadata?: { contentType?: string } } | null>;
-  delete: (key: string) => Promise<unknown>;
-};
-
-function getR2(): R2BucketLike | null {
-  try {
-    const { env } = getRequestContext();
-    const e = env as unknown as { FILES?: R2BucketLike };
-    return e.FILES ?? null;
-  } catch {
-    return null;
-  }
-}
+import { getR2 } from "@/lib/cloudflare";
 
 /**
  * GET /api/files?scopeType=...&scopeId=...
