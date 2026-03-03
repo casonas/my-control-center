@@ -41,6 +41,15 @@ export function getD1(): D1Database | null {
   }
 }
 
+/**
+ * Returns D1 or throws D1UnavailableError — use in routes that require it.
+ */
+export function requireD1(): D1Database {
+  const db = getD1();
+  if (!db) throw new D1UnavailableError();
+  return db;
+}
+
 export class D1UnavailableError extends Error {
   status = 500;
   constructor() {

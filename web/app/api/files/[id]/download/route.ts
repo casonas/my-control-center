@@ -24,7 +24,7 @@ function getR2(): R2BucketLike | null {
   }
 }
 
-export async function GET(_req: Request, ctx: { params: { id: string } }) {
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   return withReadAuth(async ({ userId }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
@@ -37,7 +37,7 @@ export async function GET(_req: Request, ctx: { params: { id: string } }) {
       );
     }
 
-    const id = ctx.params.id;
+    const { id } = await ctx.params;
 
     try {
       const file = await db

@@ -1,33 +1,59 @@
-export const runtime = "edge";
+// web/lib/env.ts — Environment status helper
 
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type D1Like = {
-  prepare: (sql: string) => {
-    first: <T = Record<string, unknown>>() => Promise<T | null>;
-  };
-};
+interface EnvStatus {
+  ok: boolean;
+  missing: string[];
+  hints: string[];
+  bindings: Record<string, boolean>;
+}
 
-export async function GET() {
-  // Avoid unsafe casting of RequestContext -> custom type
-  const { env } = getRequestContext();
+/**
+ * Check environment variables and Cloudflare bindings.
+ * Returns a status object describing what is configured.
+ */
+export function getEnvStatus(): EnvStatus {
+  const missing: string[] = [];
+  const hints: string[] = [];
+  const bindings: Record<string, boolean> = {};
 
-  const e = env as unknown as Record<string, unknown>;
-  const keys = Object.keys(e);
-
-  const DB = e["DB"] as unknown as D1Like | undefined;
-  if (!DB) {
-    return Response.json(
-      { ok: false, error: "DB binding not found on env", env_keys: keys },
-      { status: 500 }
-    );
+  // Check env vars
+  if (!process.env.MCC_PASSWORD) {
+    missing.push("MCC_PASSWORD");
+    hints.push("Set MCC_PASSWORD in Cloudflare Pages environment variables or .env.local");
+  }
+  if (!process.env.MCC_COOKIE_SIGNING_SECRET) {
+    missing.push("MCC_COOKIE_SIGNING_SECRET");
+    hints.push("Generate with: node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\"");
   }
 
-  const row = await DB.prepare("SELECT COUNT(*) as n FROM sessions").first<{ n: number }>();
+  // Check Cloudflare bindings
+  try {
+    const { env } = getRequestContext();
+    const e = env as unknown as Record<string, unknown>;
+    bindings.DB = !!e["DB"];
+    bindings.CACHE = !!e["CACHE"];
+    bindings.FILES = !!e["FILES"];
+    bindings.AI = !!e["AI"];
 
-  return Response.json({
-    ok: true,
-    sessions_count: row?.n ?? null,
-    env_keys: keys,
-  });
+    if (!e["DB"]) {
+      missing.push("DB (D1 binding)");
+      hints.push("Add D1 binding named DB in Cloudflare Pages settings");
+    }
+  } catch {
+    // Not running on Cloudflare
+    bindings.DB = false;
+    bindings.CACHE = false;
+    bindings.FILES = false;
+    bindings.AI = false;
+    hints.push("Cloudflare bindings not available (local dev or non-CF environment)");
+  }
+
+  return {
+    ok: missing.length === 0,
+    missing,
+    hints,
+    bindings,
+  };
 }
