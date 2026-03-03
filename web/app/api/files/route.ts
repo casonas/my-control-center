@@ -1,17 +1,25 @@
 export const runtime = "edge";
 // web/app/api/files/route.ts — List files + upload URL creation
 
+import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withReadAuth } from "@/lib/readAuth";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 
-function getR2(): unknown {
+type R2BucketLike = {
+  put: (...args: unknown[]) => Promise<unknown>;
+  get: (...args: unknown[]) => Promise<unknown>;
+  delete: (...args: unknown[]) => Promise<unknown>;
+};
+
+function getR2(): R2BucketLike | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("@cloudflare/next-on-pages");
-    const ctx = mod.getRequestContext();
-    return ctx?.env?.FILES ?? null;
-  } catch { return null; }
+    const { env } = getRequestContext();
+    return (env.FILES as unknown as R2BucketLike) ?? null;
+  } catch {
+    // If not running on Pages/Workers (e.g., local Node), bindings won't exist.
+    return null;
+  }
 }
 
 /**
@@ -39,7 +47,11 @@ export async function GET(req: Request) {
                  ORDER BY f.created_at DESC`;
         params = [userId, scopeType, scopeId];
       } else {
-        query = `SELECT id, name, mime, size, created_at FROM files WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`;
+        query = `SELECT id, name, mime, size, created_at
+                 FROM files
+                 WHERE user_id = ?
+                 ORDER BY created_at DESC
+                 LIMIT 50`;
         params = [userId];
       }
 
@@ -53,9 +65,16 @@ export async function GET(req: Request) {
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 const ALLOWED_MIMES = new Set([
-  "application/pdf", "text/plain", "text/markdown", "text/csv",
-  "application/json", "application/zip",
-  "image/png", "image/jpeg", "image/gif", "image/webp",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "application/zip",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
@@ -69,7 +88,11 @@ export async function POST(req: Request) {
     const r2 = getR2();
     if (!r2) {
       return Response.json(
-        { ok: false, where: "files/upload", hint: "Configure R2 bindings (FILES) in Cloudflare wrangler.toml" },
+        {
+          ok: false,
+          where: "files/upload",
+          hint: "R2 binding (FILES) not available in this runtime. Check Pages bindings."
+        },
         { status: 400 }
       );
     }
@@ -78,8 +101,10 @@ export async function POST(req: Request) {
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
 
     try {
-      const body = await req.json() as {
-        name: string; mime: string; size: number;
+      const body = (await req.json()) as {
+        name: string;
+        mime: string;
+        size: number;
         scope?: { type: string; id: string };
       };
 
@@ -87,7 +112,10 @@ export async function POST(req: Request) {
         return Response.json({ ok: false, error: "name, mime, and size are required" }, { status: 400 });
       }
       if (body.size > MAX_FILE_SIZE) {
-        return Response.json({ ok: false, error: `File too large. Max ${MAX_FILE_SIZE / 1024 / 1024}MB` }, { status: 400 });
+        return Response.json(
+          { ok: false, error: `File too large. Max ${MAX_FILE_SIZE / 1024 / 1024}MB` },
+          { status: 400 }
+        );
       }
       if (!ALLOWED_MIMES.has(body.mime) && !body.mime.startsWith("text/")) {
         return Response.json({ ok: false, error: `MIME type ${body.mime} not allowed` }, { status: 400 });
@@ -100,26 +128,31 @@ export async function POST(req: Request) {
       const storageKey = `${userId}/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${fileId}_${safeName}`;
 
       // Insert file metadata
-      await db.prepare(
-        `INSERT INTO files (id, user_id, name, mime, size, storage, storage_key, created_at)
-         VALUES (?, ?, ?, ?, ?, 'r2', ?, ?)`
-      ).bind(fileId, userId, body.name, body.mime, body.size, storageKey, now.toISOString()).run();
+      await db
+        .prepare(
+          `INSERT INTO files (id, user_id, name, mime, size, storage, storage_key, created_at)
+           VALUES (?, ?, ?, ?, ?, 'r2', ?, ?)`
+        )
+        .bind(fileId, userId, body.name, body.mime, body.size, storageKey, now.toISOString())
+        .run();
 
       // Link to scope if provided
       if (body.scope?.type && body.scope?.id) {
         const linkId = crypto.randomUUID();
-        await db.prepare(
-          `INSERT INTO file_links (id, user_id, file_id, scope, scope_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).bind(linkId, userId, fileId, body.scope.type, body.scope.id, now.toISOString()).run();
+        await db
+          .prepare(
+            `INSERT INTO file_links (id, user_id, file_id, scope, scope_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .bind(linkId, userId, fileId, body.scope.type, body.scope.id, now.toISOString())
+          .run();
       }
 
       return Response.json({
         ok: true,
         fileId,
         storageKey,
-        // Client should PUT to /api/files/[id]/upload with the actual file
-        uploadUrl: `/api/files/${fileId}/upload`,
+        uploadUrl: `/api/files/${fileId}/upload`
       });
     } catch (err) {
       return d1ErrorResponse("POST /api/files", err);
