@@ -59,11 +59,11 @@ const BREAKING_KEYWORDS = /0-day|zero.?day|cisa|breach|critical.?vuln|ransomware
 /**
  * Check if a research item title triggers a breaking news notification.
  */
-export function isBreakingResearch(title: string): { isBr: boolean; severity: NotificationSeverity } {
+export function isBreakingResearch(title: string): { isBreaking: boolean; severity: NotificationSeverity } {
   if (BREAKING_KEYWORDS.test(title)) {
-    return { isBr: true, severity: "warning" };
+    return { isBreaking: true, severity: "warning" };
   }
-  return { isBr: false, severity: "info" };
+  return { isBreaking: false, severity: "info" };
 }
 
 /**

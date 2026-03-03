@@ -243,9 +243,7 @@ export default {
     for (const userId of userIds) {
       for (const jobName of jobs) {
         const start = Date.now();
-        const jobKey = jobName.includes("_nba") || jobName.includes("_nfl")
-          ? `${jobName}_${userId}`
-          : `${jobName}_${userId}`;
+        const jobKey = `${jobName}_${userId}`;
         try {
           const result = await runJob(db, userId, jobName);
           const tookMs = Date.now() - start;

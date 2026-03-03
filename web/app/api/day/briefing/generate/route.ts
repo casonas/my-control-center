@@ -29,7 +29,8 @@ export async function POST(req: Request) {
         if ((assignments.results || []).length > 0) {
           sections.push("## 📚 Assignments Due Today\n");
           for (const a of assignments.results || []) {
-            sections.push(`- **${a.title}** (${a.status}) — due ${String(a.due_at).slice(11, 16)}`);
+            const dueTime = a.due_at ? String(a.due_at).slice(11, 16) || "all day" : "all day";
+            sections.push(`- **${a.title}** (${a.status}) — due ${dueTime}`);
           }
           sections.push("");
         }
