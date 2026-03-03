@@ -98,11 +98,19 @@ function AgentStatus({ verb }: { verb: string }) {
   );
 }
 
+/** Callback shape when a user clicks a lesson to open its chat thread */
+export interface LessonClickInfo {
+  lessonId: string;
+  lessonTitle: string;
+  skillId: string;
+  moduleTitle: string;
+}
+
 /* ═══════════════════════════════════════════════════════
    MAIN WIDGET PANEL
    ═══════════════════════════════════════════════════════ */
 
-export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
+export default function WidgetPanel({ activeTab, onLessonClick }: { activeTab: TabKey; onLessonClick?: (info: LessonClickInfo) => void }) {
   // Force re-render when local data changes
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
@@ -119,7 +127,7 @@ export default function WidgetPanel({ activeTab }: { activeTab: TabKey }) {
     case "home": return <HomeWidgets assignments={assignments} skills={skills} jobs={jobs} research={research} refresh={refresh} />;
     case "school": return <SchoolWidgets assignments={assignments} notes={notes} refresh={refresh} />;
     case "jobs": return <JobsWidgets jobs={jobs} refresh={refresh} />;
-    case "skills": return <SkillsWidgets skills={skills} refresh={refresh} />;
+    case "skills": return <SkillsWidgets skills={skills} refresh={refresh} onLessonClick={onLessonClick} />;
     case "sports": return <SportsWidgets refresh={refresh} />;
     case "stocks": return <StocksWidgets refresh={refresh} />;
     case "research": return <ResearchWidgets research={research} refresh={refresh} />;
@@ -752,7 +760,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
 /* ═══════════════════════════════════════════════════════
    SKILLS — Udemy + Coursera style
    ═══════════════════════════════════════════════════════ */
-function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refresh: () => void }) {
+function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills: Skill[]; refresh: () => void; onLessonClick?: (info: LessonClickInfo) => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
@@ -913,11 +921,21 @@ function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refr
                     {lesson.progress_status === "completed" && "✓"}
                   </button>
                   <div className="min-w-0 flex-1">
-                    <div className={cx("text-xs font-medium", lesson.progress_status === "completed" ? "text-zinc-500 line-through" : "text-white")}>
+                    <button
+                      onClick={() => onLessonClick?.({ lessonId: lesson.id, lessonTitle: lesson.lesson_title, skillId: skill.skill_id, moduleTitle: lesson.module_title })}
+                      className={cx("text-xs font-medium text-left hover:underline", lesson.progress_status === "completed" ? "text-zinc-500 line-through" : "text-white")}
+                    >
                       <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.lesson_title}
-                    </div>
+                    </button>
                     <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.module_title}</div>
                   </div>
+                  {onLessonClick && (
+                    <button
+                      onClick={() => onLessonClick({ lessonId: lesson.id, lessonTitle: lesson.lesson_title, skillId: skill.skill_id, moduleTitle: lesson.module_title })}
+                      className="shrink-0 text-[10px] text-zinc-500 hover:text-amber-400 bg-white/5 hover:bg-white/10 rounded-lg px-1.5 py-1 transition mt-0.5"
+                      title="Open lesson chat"
+                    >💬</button>
+                  )}
                 </div>
               )) : !hasApi && localSkills.find((s) => s.id === skill.skill_id) ? (
                 localSkills.find((s) => s.id === skill.skill_id)!.lessons.map((lesson, li) => (
@@ -929,11 +947,21 @@ function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refr
                       {lesson.completed && "✓"}
                     </button>
                     <div className="min-w-0 flex-1">
-                      <div className={cx("text-xs font-medium", lesson.completed ? "text-zinc-500 line-through" : "text-white")}>
+                      <button
+                        onClick={() => onLessonClick?.({ lessonId: lesson.id, lessonTitle: lesson.title, skillId: skill.skill_id, moduleTitle: "" })}
+                        className={cx("text-xs font-medium text-left hover:underline", lesson.completed ? "text-zinc-500 line-through" : "text-white")}
+                      >
                         <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.title}
-                      </div>
+                      </button>
                       <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.description}</div>
                     </div>
+                    {onLessonClick && (
+                      <button
+                        onClick={() => onLessonClick({ lessonId: lesson.id, lessonTitle: lesson.title, skillId: skill.skill_id, moduleTitle: "" })}
+                        className="shrink-0 text-[10px] text-zinc-500 hover:text-amber-400 bg-white/5 hover:bg-white/10 rounded-lg px-1.5 py-1 transition mt-0.5"
+                        title="Open lesson chat"
+                      >💬</button>
+                    )}
                   </div>
                 ))
               ) : (
