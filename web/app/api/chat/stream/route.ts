@@ -153,6 +153,7 @@ export async function POST(req: Request) {
     const decoder = new TextDecoder();
     let sseBuffer = "";
     let agentContent = "";
+    let agentPersisted = false;
     const userId = authSession.user_id;
 
     const stream = new ReadableStream({
@@ -160,7 +161,8 @@ export async function POST(req: Request) {
         const { value, done } = await reader.read();
         if (done) {
           // Persist accumulated agent response
-          if (agentContent && chatSessionId) {
+          if (agentContent && chatSessionId && !agentPersisted) {
+            agentPersisted = true;
             persistMessage(userId, chatSessionId, chatAgentId, "agent", agentContent);
           }
           controller.close();
@@ -197,8 +199,9 @@ export async function POST(req: Request) {
         }
       },
       cancel() {
-        // Persist partial agent response on early disconnect
-        if (agentContent && chatSessionId) {
+        // Persist partial agent response on early disconnect (only if not already done)
+        if (agentContent && chatSessionId && !agentPersisted) {
+          agentPersisted = true;
           persistMessage(userId, chatSessionId, chatAgentId, "agent", agentContent);
         }
         reader.cancel();

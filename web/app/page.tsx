@@ -56,6 +56,8 @@ const THEME_STRIP_RE = /\[THEME:\w+\]/g;
    MessageInput — Decoupled from parent state so typing
    does NOT re-render the entire chat/dashboard.
    ───────────────────────────────────────────────────── */
+const MAX_INPUT_HEIGHT = 160;
+
 const MessageInput = React.memo(function MessageInput({
   onSend,
   busy,
@@ -88,7 +90,7 @@ const MessageInput = React.memo(function MessageInput({
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + "px";
   }, []);
 
   // Focus input after suggestion is applied & resize
@@ -117,7 +119,7 @@ const MessageInput = React.memo(function MessageInput({
         ref={inputRef}
         rows={1}
         className="flex-1 rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5 outline-none text-sm text-white placeholder-zinc-500 focus:border-indigo-500/30 transition resize-none overflow-y-auto break-words"
-        style={{ maxHeight: 160 }}
+        style={{ maxHeight: MAX_INPUT_HEIGHT }}
         placeholder={placeholder}
         value={text}
         onChange={(e) => { setText(e.target.value); autoResize(); }}
@@ -210,16 +212,14 @@ export default function Home() {
 
   async function handleNewChat() {
     try {
-      const data = await apiPost<{ sessionId?: string; conversationId?: string }>("/chat/sessions", { agentId: activeAgentId });
-      const newId = data.sessionId || data.conversationId || crypto.randomUUID();
-      setConversationId(newId);
+      const data = await apiPost<{ sessionId: string }>("/chat/sessions", { agentId: activeAgentId });
+      setConversationId(data.sessionId);
       setMessages([]);
       chatSnapToBottom();
       loadSessions(activeAgentId);
     } catch {
-      // Fall back to conversations endpoint
-      const data = await apiPost<{ conversationId: string }>("/conversations", { agentId: activeAgentId });
-      setConversationId(data.conversationId);
+      // D1 not available — use a local random ID
+      setConversationId(crypto.randomUUID());
       setMessages([]);
     }
     setSessionsOpen(false);
