@@ -51,3 +51,7 @@ binding = "AI"
 # ─── Environment Variables ───
 [vars]
 NEXT_PUBLIC_API_BASE = "/api"
+MCC_VPS_SSE_URL = "https://bridge.my-control-center.com/chat/stream"
+MCC_VPS_CONNECT_URL = "https://bridge.my-control-center.com/agents/connect"
+MCC_VPS_HEARTBEAT_URL = "https://bridge.my-control-center.com/agents/heartbeat"
+MCC_VPS_SCAN_URL = "https://bridge.my-control-center.com/status"
