@@ -23,6 +23,9 @@
 name = "my-control-center"
 compatibility_date = "2025-01-01"
 
+# ─── Pages build output (tells Cloudflare Pages to read this file) ───
+pages_build_output_dir = ".vercel/output/static"
+
 # ─── D1 Database (cross-device persistent storage) ───
 # SETUP: Run `wrangler d1 create mcc-store` and paste the database_id below
 [[d1_databases]]
