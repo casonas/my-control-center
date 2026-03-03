@@ -26,6 +26,9 @@ crons = [
   "0 8 * * *",           # Daily 8am UTC: skills_radar_scan
   "0 9,13,18 * * 1-5",   # Weekday 9am/1pm/6pm: jobs_refresh
   "*/15 * * * *",        # Every 15 min: sports_refresh (game days)
+  "0 6 * * *",           # Daily 6am UTC: lesson_plan_refresh
+  "0 */3 * * *",         # Every 3 hours: industry_radar_refresh
+  "0 3 * * *",           # Daily 3am UTC: memory_summarize
 ]
 
 # ─── Environment Variables ───

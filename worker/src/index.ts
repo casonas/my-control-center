@@ -12,24 +12,19 @@ export interface Env {
 }
 
 // ─── Cron schedule → job mapping ─────────────────────
-// Cloudflare cron triggers call the scheduled() handler.
-// We map cron expressions to job names based on schedule patterns.
 const SCHEDULE_MAP: Record<string, string[]> = {
-  // Hourly jobs (minute 0)
   "research_scan": ["0 * * * *"],
-  // Stocks refresh every 10 min
   "stocks_refresh": ["*/10 * * * *"],
-  // Stocks news hourly at :15
   "stocks_news_scan": ["15 * * * *"],
-  // Skills radar daily at 8am
   "skills_radar_scan": ["0 8 * * *"],
-  // Jobs refresh weekdays
   "jobs_refresh": ["0 9,13,18 * * 1-5"],
-  // Sports every 15 min
   "sports_refresh_nba": ["*/15 * * * *"],
+  // New autonomous jobs
+  "lesson_plan_refresh": ["0 6 * * *"],
+  "industry_radar_refresh": ["0 */3 * * *"],
+  "memory_summarize": ["0 3 * * *"],
 };
 
-// Determine which jobs to run based on the cron trigger expression
 function getJobsForCron(cron: string): string[] {
   const jobs: string[] = [];
   for (const [job, crons] of Object.entries(SCHEDULE_MAP)) {
@@ -37,17 +32,13 @@ function getJobsForCron(cron: string): string[] {
       jobs.push(job);
     }
   }
-  // If no exact match, run a sensible default set based on frequency
   if (jobs.length === 0) {
-    // For the generic triggers in wrangler.toml, run all applicable jobs
-    return ["research_scan", "jobs_refresh", "stocks_refresh", "stocks_news_scan", "skills_radar_scan", "sports_refresh_nba"];
+    return Object.keys(SCHEDULE_MAP);
   }
   return jobs;
 }
 
-// ─── Shared job runner (mirrors lib/cron.ts logic) ───
-// We inline minimal versions here since Workers can't import from Pages lib/.
-// In production, you'd use a shared package or call internal APIs.
+// ─── Shared helpers (inlined — Workers can't import from Pages) ───
 
 async function getAllUserIds(db: D1Database): Promise<string[]> {
   try {
@@ -77,10 +68,46 @@ async function updateCronRun(
   }
 }
 
-// Minimal RSS parser for Worker context (no external deps)
+// ─── Idempotency helpers (inlined for worker) ────────
+
+function makeIdempotencyKey(jobName: string, userId: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `${jobName}:${userId}:${today}`;
+}
+
+async function isAlreadyCompleted(db: D1Database, key: string): Promise<boolean> {
+  try {
+    const now = new Date().toISOString();
+    const row = await db
+      .prepare(`SELECT 1 FROM idempotency_keys WHERE idempotency_key = ? AND status = 'completed' AND expires_at > ?`)
+      .bind(key, now)
+      .first();
+    return !!row;
+  } catch {
+    return false; // If table doesn't exist yet, allow the job to run
+  }
+}
+
+async function markCompleted(db: D1Database, key: string): Promise<void> {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  try {
+    await db
+      .prepare(
+        `INSERT OR REPLACE INTO idempotency_keys (idempotency_key, status, result_json, completed_at, expires_at, created_at)
+         VALUES (?, 'completed', NULL, ?, ?, ?)`
+      )
+      .bind(key, now, expiresAt, now)
+      .run();
+  } catch {
+    // Non-critical — continue even if idempotency table not available
+  }
+}
+
+// ─── Minimal RSS parser ──────────────────────────────
+
 function parseFeedItems(xml: string): { title: string; url: string; publishedAt: string | null; summary: string | null }[] {
   const items: { title: string; url: string; publishedAt: string | null; summary: string | null }[] = [];
-  // Match <item> or <entry> blocks
   const itemRegex = /<(?:item|entry)[\s>]([\s\S]*?)<\/(?:item|entry)>/gi;
   let match;
   while ((match = itemRegex.exec(xml)) !== null) {
@@ -97,6 +124,8 @@ function parseFeedItems(xml: string): { title: string; url: string; publishedAt:
   }
   return items;
 }
+
+// ─── Job runners ─────────────────────────────────────
 
 async function runResearchScan(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
   let newItems = 0, sourcesFailed = 0;
@@ -193,7 +222,102 @@ async function runSkillsRadarScan(db: D1Database, userId: string): Promise<{ ite
   return { items: newItems, failed: sourcesFailed };
 }
 
-// ─── Job dispatcher ──────────────────────────────────
+// ─── New autonomous job runners ──────────────────────
+
+async function runLessonPlanRefresh(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
+  let added = 0;
+  const skills = await db.prepare(`SELECT id, name, level FROM skill_items WHERE user_id = ?`).bind(userId).all();
+  const maxSkillsPerRun = 3;
+  const now = new Date().toISOString();
+
+  for (const sk of (skills.results || []).slice(0, maxSkillsPerRun)) {
+    const skillId = String(sk.id);
+    const name = String(sk.name);
+    const count = await db.prepare(`SELECT COUNT(*) as cnt FROM skill_lessons WHERE user_id = ? AND skill_id = ?`).bind(userId, skillId).first();
+    if (((count as Record<string, unknown>)?.cnt as number ?? 0) >= 9) continue;
+
+    const dedupeBase = `${skillId}:${name} fundamentals:introduction to ${name}`.toLowerCase().replace(/\s+/g, "_").slice(0, 200);
+    const existing = await db.prepare(`SELECT id FROM skill_lessons WHERE user_id = ? AND skill_id = ? AND dedupe_key = ?`).bind(userId, skillId, dedupeBase).first();
+    if (existing) continue;
+
+    const maxOrder = await db.prepare(`SELECT MAX(order_index) as max_idx FROM skill_lessons WHERE user_id = ? AND skill_id = ?`).bind(userId, skillId).first();
+    let nextOrder = ((maxOrder as Record<string, unknown>)?.max_idx as number ?? -1) + 1;
+
+    const lessons = [
+      { mod: `${name} Fundamentals`, title: `Introduction to ${name}`, mins: 15,
+        md: `# Introduction to ${name}\n\n## Overview\nFoundational concepts of ${name}.\n\n## Key Concepts\n- Core principles\n- Modern relevance\n- Common applications` },
+      { mod: `${name} Fundamentals`, title: `${name} Core Practices`, mins: 25,
+        md: `# ${name} Core Practices\n\n## Topics\n- Environment setup\n- Basic workflows\n- Common pitfalls` },
+      { mod: `${name} in Practice`, title: `Applying ${name}`, mins: 20,
+        md: `# Applying ${name}\n\n## Real-World Use\n- Industry patterns\n- Challenges & solutions` },
+    ];
+
+    for (const l of lessons) {
+      const dk = `${skillId}:${l.mod}:${l.title}`.toLowerCase().replace(/\s+/g, "_").slice(0, 200);
+      try {
+        await db.prepare(
+          `INSERT OR IGNORE INTO skill_lessons (id, user_id, skill_id, module_title, lesson_title, order_index, duration_minutes, content_md, resources_json, created_at, updated_at, source, dedupe_key, generation_meta_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 'auto', ?, ?)`
+        ).bind(crypto.randomUUID(), userId, skillId, l.mod, l.title, nextOrder++, l.mins, l.md, now, now, dk,
+          JSON.stringify({ generator: "cron_template", model: "none" })
+        ).run();
+        added++;
+      } catch { /* dedupe */ }
+    }
+  }
+  return { items: added, failed: 0 };
+}
+
+async function runIndustryRadarRefresh(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
+  return runSkillsRadarScan(db, userId);
+}
+
+async function runMemorySummarize(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
+  let summarized = 0;
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const now = new Date().toISOString();
+
+  try {
+    const sessions = await db.prepare(
+      `SELECT s.id, s.title, s.agent_id FROM chat_sessions s
+       WHERE s.user_id = ? AND s.updated_at < ?
+         AND s.id NOT IN (SELECT source_id FROM memory_notes WHERE user_id = ? AND category = 'session_summary' AND source_id IS NOT NULL)
+       ORDER BY s.updated_at DESC LIMIT 10`
+    ).bind(userId, cutoff, userId).all();
+
+    for (const sess of (sessions.results || [])) {
+      const msgs = await db.prepare(
+        `SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 20`
+      ).bind(String(sess.id)).all();
+
+      if (!msgs.results || msgs.results.length < 2) continue;
+
+      const userMsgs = msgs.results.filter(m => String(m.role) === "user").map(m => String(m.content).slice(0, 100));
+      const agentMsgs = msgs.results.filter(m => String(m.role) === "agent").map(m => String(m.content).slice(0, 100));
+
+      const summary = [
+        `Session: ${String(sess.title)}`,
+        `Agent: ${String(sess.agent_id)}`,
+        `Messages: ${msgs.results.length}`,
+        `User topics: ${userMsgs.slice(0, 3).join("; ")}`,
+        `Key responses: ${agentMsgs.slice(0, 2).join("; ")}`,
+      ].join("\n");
+
+      try {
+        await db.prepare(
+          `INSERT OR IGNORE INTO memory_notes (id, user_id, category, subject, content, source_type, source_id, created_at, updated_at)
+           VALUES (?, ?, 'session_summary', ?, ?, 'auto', ?, ?, ?)`
+        ).bind(crypto.randomUUID(), userId, String(sess.title), summary, String(sess.id), now, now).run();
+        summarized++;
+      } catch { /* dedupe */ }
+    }
+  } catch {
+    // memory_notes table may not exist yet
+  }
+  return { items: summarized, failed: 0 };
+}
+
+// ─── Job dispatcher with retry ───────────────────────
 type JobResult = { items: number; failed: number };
 
 async function runJob(db: D1Database, userId: string, jobName: string): Promise<JobResult> {
@@ -202,18 +326,37 @@ async function runJob(db: D1Database, userId: string, jobName: string): Promise<
     case "jobs_refresh": return runJobsRefresh(db, userId);
     case "stocks_news_scan": return runStocksNewsScan(db, userId);
     case "skills_radar_scan": return runSkillsRadarScan(db, userId);
+    case "lesson_plan_refresh": return runLessonPlanRefresh(db, userId);
+    case "industry_radar_refresh": return runIndustryRadarRefresh(db, userId);
+    case "memory_summarize": return runMemorySummarize(db, userId);
     case "stocks_refresh": {
-      // MVP: placeholder — real provider integration point
       const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all();
       return { items: (wl.results || []).length, failed: 0 };
     }
     case "sports_refresh_nba":
     case "sports_refresh_nfl":
-      // MVP: placeholder — real provider integration point
       return { items: 0, failed: 0 };
     default:
       return { items: 0, failed: 0 };
   }
+}
+
+const MAX_RETRIES = 1;
+
+async function runJobWithRetry(db: D1Database, userId: string, jobName: string): Promise<JobResult> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await runJob(db, userId, jobName);
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_RETRIES) {
+        console.warn(`[cron] ${jobName} for ${userId} attempt ${attempt + 1} failed, retrying...`);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
 }
 
 // ─── Main scheduled handler ──────────────────────────
@@ -244,12 +387,28 @@ export default {
       for (const jobName of jobs) {
         const start = Date.now();
         const jobKey = `${jobName}_${userId}`;
+
+        // Idempotency: skip if already completed today
+        const idemKey = makeIdempotencyKey(jobName, userId);
+        // Only apply daily idempotency to infrequent jobs
+        const dailyJobs = ["lesson_plan_refresh", "memory_summarize", "skills_radar_scan"];
+        if (dailyJobs.includes(jobName) && await isAlreadyCompleted(db, idemKey)) {
+          console.log(`[cron] ${jobName} for ${userId}: already completed today, skipping`);
+          continue;
+        }
+
         try {
-          const result = await runJob(db, userId, jobName);
+          const result = await runJobWithRetry(db, userId, jobName);
           const tookMs = Date.now() - start;
           const totalSources = result.items + result.failed;
           const status = result.failed === 0 ? "ok" : (totalSources > 0 && result.failed < totalSources) ? "partial" : "error";
           await updateCronRun(db, jobKey, { status, itemsProcessed: result.items, tookMs });
+
+          // Mark daily jobs as completed for idempotency
+          if (dailyJobs.includes(jobName)) {
+            await markCompleted(db, idemKey);
+          }
+
           console.log(`[cron] ${jobName} for ${userId}: ${status}, ${result.items} items, ${tookMs}ms`);
         } catch (err) {
           const tookMs = Date.now() - start;
@@ -261,7 +420,6 @@ export default {
     }
   },
 
-  // Optional: HTTP handler for manual health checks
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {

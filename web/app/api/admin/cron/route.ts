@@ -67,7 +67,8 @@ export async function GET() {
 const VALID_JOBS: CronJobName[] = [
   "research_scan", "jobs_refresh", "stocks_refresh",
   "stocks_news_scan", "sports_refresh_nba", "sports_refresh_nfl",
-  "skills_radar_scan",
+  "skills_radar_scan", "lesson_plan_refresh", "industry_radar_refresh",
+  "memory_summarize",
 ];
 
 /**
