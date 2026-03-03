@@ -1,6 +1,14 @@
 // web/lib/d1.ts — D1 binding helper with graceful fallback
-
-import { getRequestContext } from "@cloudflare/next-on-pages";
+//
+// WHY THIS WAS FAILING:
+// @cloudflare/next-on-pages is deprecated (use @opennextjs/cloudflare).
+// Its getRequestContext() just reads a well-known globalThis symbol.
+// We read that symbol directly — no import needed, no build warnings.
+//
+// If D1 is still not found the most likely cause is that the D1 binding
+// is not configured in Cloudflare Pages:
+//   Dashboard → Pages → your project → Settings → Functions →
+//   D1 database bindings → Variable name: DB
 
 /** Minimal D1 interface — avoids needing @cloudflare/workers-types */
 export interface D1Database {
@@ -29,16 +37,39 @@ export interface D1ExecResult {
 }
 
 /**
- * Returns null when not running on Cloudflare (e.g., local next dev).
+ * Reads the Cloudflare env object from the well-known globalThis symbol.
+ * This is the same symbol that @cloudflare/next-on-pages getRequestContext()
+ * reads, but we access it directly to avoid importing the deprecated package.
  */
-export function getD1(): D1Database | null {
+export function getCfEnv(): Record<string, unknown> | null {
   try {
-    const { env } = getRequestContext();
-    const maybe = env as unknown as { DB?: D1Database };
-    return maybe.DB ?? null;
+    const sym = Symbol.for("__cloudflare-request-context__");
+    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
+      | { env?: Record<string, unknown> }
+      | undefined;
+    return ctx?.env ?? null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Returns null when not running on Cloudflare (e.g., local next dev)
+ * or when the D1 binding named "DB" is not configured.
+ */
+export function getD1(): D1Database | null {
+  const env = getCfEnv();
+  if (!env) return null;
+  const db = env["DB"] as D1Database | undefined;
+  if (!db) {
+    console.warn(
+      "[getD1] Cloudflare env found but DB binding is missing. " +
+        "Go to Pages → Settings → Functions → D1 database bindings and add variable name DB. " +
+        "Available bindings: " +
+        Object.keys(env).join(", ")
+    );
+  }
+  return db ?? null;
 }
 
 /**

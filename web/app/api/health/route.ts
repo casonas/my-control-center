@@ -1,8 +1,7 @@
 export const runtime = "edge";
 // web/app/api/health/route.ts — Public health check (no auth required)
 
-import { getD1 } from "@/lib/d1";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getD1, getCfEnv } from "@/lib/d1";
 
 export async function GET() {
   const time = new Date().toISOString();
@@ -25,9 +24,8 @@ export async function GET() {
   // R2 check (just configuration presence)
   let r2Configured = false;
   try {
-    const { env } = getRequestContext();
-    const e = env as unknown as Record<string, unknown>;
-    r2Configured = !!e["FILES"];
+    const env = getCfEnv();
+    r2Configured = !!env?.["FILES"];
   } catch { /* not on Cloudflare */ }
   services.r2 = { ok: r2Configured, configured: r2Configured };
 

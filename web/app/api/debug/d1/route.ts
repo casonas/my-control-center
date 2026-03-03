@@ -1,26 +1,16 @@
 export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
-
-type D1Like = {
-  prepare: (sql: string) => {
-    first: <T = Record<string, unknown>>() => Promise<T | null>;
-  };
-};
+import { getD1 } from "@/lib/d1";
 
 export async function GET() {
-  const ctx = getRequestContext();
-  const env = ctx.env as unknown as Record<string, unknown>;
-  const keys = Object.keys(env ?? {});
-
-  const DB = env["DB"] as unknown as D1Like | undefined;
-  if (!DB) {
+  const db = getD1();
+  if (!db) {
     return Response.json(
-      { ok: false, error: "DB binding not found on env", env_keys: keys },
+      { ok: false, error: "DB binding not found — check Pages → Settings → Functions → D1 database bindings" },
       { status: 500 }
     );
   }
 
-  const row = await DB.prepare("SELECT COUNT(*) as n FROM sessions").first<{ n: number }>();
-  return Response.json({ ok: true, sessions_count: row?.n ?? null, env_keys: keys });
+  const row = await db.prepare("SELECT COUNT(*) as n FROM sessions").first<{ n: number }>();
+  return Response.json({ ok: true, sessions_count: row?.n ?? null });
 }

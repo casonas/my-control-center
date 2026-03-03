@@ -1,12 +1,25 @@
 // web/lib/env.ts — Environment status helper
-
-import { getRequestContext } from "@cloudflare/next-on-pages";
+//
+// Reads Cloudflare bindings via the well-known globalThis symbol
+// (same pattern as lib/d1.ts).
 
 interface EnvStatus {
   ok: boolean;
   missing: string[];
   hints: string[];
   bindings: Record<string, boolean>;
+}
+
+function getCfEnv(): Record<string, unknown> | null {
+  try {
+    const sym = Symbol.for("__cloudflare-request-context__");
+    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
+      | { env?: Record<string, unknown> }
+      | undefined;
+    return ctx?.env ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -29,20 +42,18 @@ export function getEnvStatus(): EnvStatus {
   }
 
   // Check Cloudflare bindings
-  try {
-    const { env } = getRequestContext();
-    const e = env as unknown as Record<string, unknown>;
-    bindings.DB = !!e["DB"];
-    bindings.CACHE = !!e["CACHE"];
-    bindings.FILES = !!e["FILES"];
-    bindings.AI = !!e["AI"];
+  const env = getCfEnv();
+  if (env) {
+    bindings.DB = !!env["DB"];
+    bindings.CACHE = !!env["CACHE"];
+    bindings.FILES = !!env["FILES"];
+    bindings.AI = !!env["AI"];
 
-    if (!e["DB"]) {
+    if (!env["DB"]) {
       missing.push("DB (D1 binding)");
       hints.push("Add D1 binding named DB in Cloudflare Pages settings");
     }
-  } catch {
-    // Not running on Cloudflare
+  } else {
     bindings.DB = false;
     bindings.CACHE = false;
     bindings.FILES = false;

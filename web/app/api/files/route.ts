@@ -1,7 +1,6 @@
 export const runtime = "edge";
 // web/app/api/files/route.ts — List files + upload URL creation
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withReadAuth } from "@/lib/readAuth";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
@@ -14,9 +13,12 @@ type R2BucketLike = {
 
 function getR2(): R2BucketLike | null {
   try {
-    const { env } = getRequestContext();
-    const e = env as unknown as { FILES?: R2BucketLike };
-    return e.FILES ?? null;
+    const sym = Symbol.for("__cloudflare-request-context__");
+    const ctx = (globalThis as Record<symbol, unknown>)[sym] as
+      | { env?: Record<string, unknown> }
+      | undefined;
+    const e = ctx?.env as unknown as { FILES?: R2BucketLike } | undefined;
+    return e?.FILES ?? null;
   } catch {
     return null;
   }
