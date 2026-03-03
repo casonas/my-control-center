@@ -1,31 +1,39 @@
 export const runtime = "edge";
 // web/app/api/files/[id]/download/route.ts — Download file from R2
 
+import { getRequestContext } from "@cloudflare/next-on-pages";
 import { withReadAuth } from "@/lib/readAuth";
 import { getD1 } from "@/lib/d1";
 
-function getR2(): { get(key: string): Promise<{ body: ReadableStream; httpMetadata?: { contentType?: string } } | null> } | null {
+type R2ObjectLike = {
+  body: ReadableStream;
+  httpMetadata?: { contentType?: string };
+};
+
+type R2BucketLike = {
+  get: (key: string) => Promise<R2ObjectLike | null>;
+};
+
+function getR2(): R2BucketLike | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("@cloudflare/next-on-pages");
-    const ctx = mod.getRequestContext();
-    return ctx?.env?.FILES ?? null;
-  } catch { return null; }
+    const { env } = getRequestContext();
+    return (env.FILES as unknown as R2BucketLike) ?? null;
+  } catch {
+    return null;
+  }
 }
 
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   return withReadAuth(async ({ userId }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
 
-    const { id } = await params;
+    const { id } = await ctx.params;
+
     const r2 = getR2();
     if (!r2) {
       return Response.json(
-        { ok: false, where: "files/download", hint: "R2 not configured" },
+        { ok: false, where: "files/download", hint: "R2 not configured (FILES binding missing)" },
         { status: 400 }
       );
     }
@@ -36,19 +44,17 @@ export async function GET(
         .bind(id, userId)
         .first<{ storage_key: string; name: string; mime: string }>();
 
-      if (!file) {
-        return Response.json({ ok: false, error: "File not found" }, { status: 404 });
-      }
+      if (!file) return Response.json({ ok: false, error: "File not found" }, { status: 404 });
 
       const obj = await r2.get(file.storage_key);
-      if (!obj) {
-        return Response.json({ ok: false, error: "File not found in storage" }, { status: 404 });
-      }
+      if (!obj) return Response.json({ ok: false, error: "File not found in storage" }, { status: 404 });
+
+      const safeFilename = file.name.replace(/"/g, '\\"');
 
       return new Response(obj.body, {
         headers: {
-          "Content-Type": file.mime,
-          "Content-Disposition": `attachment; filename="${file.name.replace(/"/g, '\\"')}"`,
+          "Content-Type": file.mime || obj.httpMetadata?.contentType || "application/octet-stream",
+          "Content-Disposition": `attachment; filename="${safeFilename}"`,
           "Cache-Control": "private, max-age=300",
         },
       });
