@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
+import type { LessonClickInfo } from "../components/WidgetPanel";
 import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
 import { TABS, type TabKey, type Agent, type Msg, type Note } from "@/lib/types";
 import { getNotes, saveNote, deleteNote, searchAll } from "@/lib/store";
@@ -241,6 +242,47 @@ export default function Home() {
     setSessionsOpen(false);
   }
 
+  /* ─── Lesson-specific chat threads ─── */
+  const [lessonContext, setLessonContext] = useState<LessonClickInfo | null>(null);
+
+  const openLessonChat = useCallback(async (info: LessonClickInfo) => {
+    setLessonContext(info);
+    // Ensure we're on the skills tab
+    const ws = switchToTab("skills");
+    setActiveTabRaw(ws.tab);
+    setActiveAgentIdRaw(ws.agentId);
+
+    try {
+      // Find-or-create a session for this lesson
+      const data = await apiPost<{ sessionId: string; title: string; created: boolean }>("/chat/sessions", {
+        agentId: ws.agentId,
+        title: `📖 ${info.lessonTitle}`,
+        contextType: "lesson",
+        contextId: info.lessonId,
+      });
+
+      const sessionId = data.sessionId;
+      setConversationId(sessionId);
+
+      // Load existing messages from D1
+      const detail = await apiGet<{ session: ChatSessionItem; messages: { role: string; content: string }[] }>(`/chat/sessions/${sessionId}`);
+      const msgs: Msg[] = (detail.messages || []).map((m) => ({
+        role: m.role === "user" ? "user" as const : "agent" as const,
+        content: m.content,
+      }));
+      setMessages(msgs);
+      chatSnapToBottom();
+      loadSessions(ws.agentId);
+
+      // On mobile, open the chat pane
+      setMobileChatOpen(true);
+    } catch {
+      // D1 not available — open chat with a new random session
+      setConversationId(crypto.randomUUID());
+      setMessages([]);
+    }
+  }, [chatSnapToBottom, loadSessions]);
+
   /* ─── Notes ─── */
   const [notesTick, setNotesTick] = useState(0);
   const [notesFilter, setNotesFilter] = useState<TabKey | "all">("all");
@@ -297,15 +339,37 @@ export default function Home() {
   useEffect(() => { refreshAuthAndBootstrap(); return () => { disconnectAll(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function newConversation(agentId: string) {
-    // Check cache first — restore old messages if the user is switching back
+    // Check in-memory cache first — restore messages if user is switching back
     const cached = chatCacheRef.current[agentId];
     if (cached) {
       setConversationId(cached.convId);
       setMessages(cached.msgs);
       return;
     }
-    const data = await apiPost<{ conversationId: string }>("/conversations", { agentId, title: `${agentId} chat` });
-    setConversationId(data.conversationId);
+    // Try to resume the most recent D1 session for this agent
+    try {
+      const sessionData = await apiGet<{ sessions: ChatSessionItem[] }>(`/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
+      const latest = sessionData.sessions?.[0];
+      if (latest) {
+        const detail = await apiGet<{ session: ChatSessionItem; messages: { role: string; content: string }[] }>(`/chat/sessions/${latest.id}`);
+        setConversationId(latest.id);
+        setMessages((detail.messages || []).map((m) => ({
+          role: m.role === "user" ? "user" as const : "agent" as const,
+          content: m.content,
+        })));
+        return;
+      }
+    } catch {
+      // D1 not available — fall through
+    }
+    // No prior session — start fresh with a new ID
+    try {
+      const data = await apiPost<{ sessionId?: string; conversationId?: string }>("/chat/sessions", { agentId });
+      const newId = data.sessionId || data.conversationId || crypto.randomUUID();
+      setConversationId(newId);
+    } catch {
+      setConversationId(crypto.randomUUID());
+    }
     setMessages([]);
   }
 
@@ -749,27 +813,34 @@ export default function Home() {
     const suggestions = suggestionsMap[activeTab] || suggestionsMap.home;
 
     return (
-      <section className={cx("glass-light rounded-2xl flex flex-col min-h-[60vh] lg:min-h-[75vh]", glowMap[activeTab])}>
+      <section className={cx("glass-light rounded-2xl flex flex-col h-full", glowMap[activeTab])}>
         {/* A) Sticky header with session controls */}
         <div className="shrink-0 p-3 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base">{activeAgent?.emoji || "🤖"}</span>
             <div>
               <div className="text-xs font-semibold text-white flex items-center gap-1.5">
-                {activeAgent?.name || "Agent"}
+                {lessonContext ? `📖 ${lessonContext.lessonTitle}` : (activeAgent?.name || "Agent")}
                 {agentSessions[activeAgentId]?.status === "connected" && (
                   <span className="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" title="Connected — no cold start" />
                 )}
               </div>
               <div className="text-[10px] text-zinc-500">
-                {activeAgent?.model || `${tabMeta.icon} ${tabMeta.label}`}
+                {lessonContext ? lessonContext.moduleTitle || "Lesson chat" : (activeAgent?.model || `${tabMeta.icon} ${tabMeta.label}`)}
                 {collabMode && collabAgentIds.size > 0 && ` · 👥 ${collabAgentIds.size} collab`}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {lessonContext && (
+              <button
+                onClick={() => { setLessonContext(null); handleNewChat(); }}
+                className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
+                title="Back to general chat"
+              >← General</button>
+            )}
             <button
-              onClick={handleNewChat}
+              onClick={() => { setLessonContext(null); handleNewChat(); }}
               className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
               title="New chat"
             >＋ New</button>
@@ -1155,26 +1226,30 @@ export default function Home() {
     return <Login onSuccess={refreshAuthAndBootstrap} />;
   }
 
-  // Main dashboard
+  // Main dashboard — full-height, no page scroll
   return (
-    <main className="min-h-screen bg-[#050507] text-white" style={{ "--theme-accent": themeAccent } as React.CSSProperties}>
+    <main className="h-screen flex flex-col overflow-hidden bg-[#050507] text-white" style={{ "--theme-accent": themeAccent } as React.CSSProperties}>
       {Header()}
 
-      <div className="mx-auto max-w-[1600px] flex">
+      <div className="mx-auto max-w-[1600px] flex flex-1 min-h-0 w-full">
         {Sidebar()}
 
-        <div className="flex-1 p-3 md:p-4 min-w-0">
-          {/* Desktop: side-by-side layout */}
-          <div className="hidden md:grid md:grid-cols-[1fr_420px] gap-4">
+        <div className="flex-1 p-3 md:p-4 min-w-0 min-h-0 flex flex-col">
+          {/* Desktop: side-by-side dual-pane, internal scroll only */}
+          <div className="hidden md:grid md:grid-cols-[1fr_420px] gap-4 flex-1 min-h-0">
             {ChatPanel()}
-            <div className="space-y-3 overflow-auto max-h-[calc(100vh-90px)] pb-4">
-              <WidgetPanel activeTab={activeTab} />
+            <div className="overflow-y-auto space-y-3 pb-4">
+              <WidgetPanel activeTab={activeTab} onLessonClick={openLessonChat} />
             </div>
           </div>
 
           {/* Mobile: stacked with chat toggle */}
-          <div className="md:hidden space-y-3">
-            {!mobileChatOpen && <WidgetPanel activeTab={activeTab} />}
+          <div className="md:hidden flex-1 min-h-0 flex flex-col">
+            {!mobileChatOpen && (
+              <div className="flex-1 overflow-y-auto space-y-3">
+                <WidgetPanel activeTab={activeTab} onLessonClick={openLessonChat} />
+              </div>
+            )}
             {mobileChatOpen && ChatPanel()}
           </div>
         </div>

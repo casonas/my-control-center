@@ -197,6 +197,10 @@ export async function POST(req: Request) {
         }
       },
       cancel() {
+        // Persist partial agent response on early disconnect
+        if (agentContent && chatSessionId) {
+          persistMessage(userId, chatSessionId, chatAgentId, "agent", agentContent);
+        }
         reader.cancel();
       },
     });
