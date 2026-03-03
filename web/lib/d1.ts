@@ -1,7 +1,4 @@
 // web/lib/d1.ts — D1 binding helper with graceful fallback
-//
-// On Cloudflare Pages: uses getRequestContext() to access env.DB
-// On local dev (next dev): returns null (routes should handle gracefully)
 
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
@@ -31,30 +28,17 @@ export interface D1ExecResult {
   duration: number;
 }
 
-type EnvWithDB = {
-  DB?: unknown;
-};
-
 /**
- * Try to obtain the D1 database binding.
- * Returns null when running outside Cloudflare (local next dev).
+ * Returns null when not running on Cloudflare (e.g., local next dev).
  */
 export function getD1(): D1Database | null {
   try {
     const { env } = getRequestContext();
-    const maybe = (env as unknown as EnvWithDB | undefined)?.DB;
-    return (maybe as unknown as D1Database) ?? null;
+    const maybe = env as unknown as { DB?: D1Database };
+    return maybe.DB ?? null;
   } catch {
-    // getRequestContext() throws outside Pages runtime (ex: local next dev)
     return null;
   }
-}
-
-/** Get D1 or throw a descriptive 500 error. */
-export function requireD1(): D1Database {
-  const db = getD1();
-  if (!db) throw new D1UnavailableError();
-  return db;
 }
 
 export class D1UnavailableError extends Error {
@@ -64,14 +48,17 @@ export class D1UnavailableError extends Error {
   }
 }
 
-/** Standard JSON error response for D1 issues. */
 export function d1ErrorResponse(where: string, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  const hint =
-    err instanceof D1UnavailableError
-      ? "D1 binding (env.DB) not found. Check Pages bindings: D1 database binding name must be DB."
-      : "Confirm D1 schema applied to REMOTE database: npx wrangler d1 execute mcc-store --remote --file=cloudflare/d1-schema.sql";
-
   console.error(`[${where}] D1 error:`, message);
-  return Response.json({ error: message, where, hint }, { status: 500 });
+  return Response.json(
+    {
+      ok: false,
+      where,
+      error: message,
+      hint:
+        "D1 binding missing at runtime. Confirm Pages project has D1 binding named DB, and you deployed the commit that reads env.DB via getRequestContext().",
+    },
+    { status: 500 }
+  );
 }
