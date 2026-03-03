@@ -1,58 +1,33 @@
-// web/lib/env.ts — Central environment & binding validator
+export const runtime = "edge";
 
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { getD1 } from "./d1";
 
-export interface EnvStatus {
-  ok: boolean;
-  missing: string[];
-  invalid: string[];
-  hints: string[];
-  bindings: {
-    d1: boolean;
-    r2: boolean;
-    kv: boolean;
-    ai: boolean;
+type D1Like = {
+  prepare: (sql: string) => {
+    first: <T = Record<string, unknown>>() => Promise<T | null>;
   };
-}
+};
 
-export function getEnvStatus(): EnvStatus {
-  const missing: string[] = [];
-  const invalid: string[] = [];
-  const hints: string[] = [];
+export async function GET() {
+  // Avoid unsafe casting of RequestContext -> custom type
+  const { env } = getRequestContext();
 
-  const d1 = !!getD1();
+  const e = env as unknown as Record<string, unknown>;
+  const keys = Object.keys(e);
 
-  let r2 = false;
-  let kv = false;
-  let ai = false;
-
-  try {
-    const { env } = getRequestContext();
-    const e = env as unknown as { FILES?: unknown; CACHE?: unknown; AI?: unknown };
-    r2 = !!e.FILES;
-    kv = !!e.CACHE;
-    ai = !!e.AI;
-  } catch {
-    // not on Cloudflare
-  }
-
-  if (!d1) {
-    missing.push("DB (D1 database)");
-    hints.push("Pages Settings → Bindings → D1 database binding named DB");
-  }
-  if (!r2) hints.push("R2 (FILES) not configured — file uploads disabled");
-  if (!kv) hints.push("KV (CACHE) not configured — caching disabled");
-
-  const ok = missing.length === 0 && invalid.length === 0;
-  return { ok, missing, invalid, hints, bindings: { d1, r2, kv, ai } };
-}
-
-export function assertEnvOrThrow(where: string): void {
-  const status = getEnvStatus();
-  if (!status.ok) {
-    throw new Error(
-      `[${where}] Environment not configured: ${status.missing.join(", ")}. Hints: ${status.hints.join("; ")}`
+  const DB = e["DB"] as unknown as D1Like | undefined;
+  if (!DB) {
+    return Response.json(
+      { ok: false, error: "DB binding not found on env", env_keys: keys },
+      { status: 500 }
     );
   }
+
+  const row = await DB.prepare("SELECT COUNT(*) as n FROM sessions").first<{ n: number }>();
+
+  return Response.json({
+    ok: true,
+    sessions_count: row?.n ?? null,
+    env_keys: keys,
+  });
 }
