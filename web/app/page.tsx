@@ -71,7 +71,7 @@ const MessageInput = React.memo(function MessageInput({
   onSuggestionConsumed: () => void;
 }) {
   const [text, setText] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // "Adjusting state during render" pattern — avoids useEffect + setState lint error.
   // React re-renders once more with the new text; no cascading effects.
@@ -82,33 +82,52 @@ const MessageInput = React.memo(function MessageInput({
     onSuggestionConsumed();
   }
 
-  // Focus input after suggestion is applied
+  // Auto-resize textarea to fit content (up to max-height)
+  const autoResize = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, []);
+
+  // Focus input after suggestion is applied & resize
   useEffect(() => {
     if (text && inputRef.current && document.activeElement !== inputRef.current) {
       inputRef.current.focus();
     }
-  }, [text]);
+    autoResize();
+  }, [text, autoResize]);
 
   function handleSend() {
     if (!text.trim() || busy) return;
     onSend(text.trim());
     setText("");
+    // Reset height after clearing
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
+    });
   }
 
   return (
-    <div className="p-3 border-t border-white/5 flex gap-2">
-      <input
+    <div className="p-3 border-t border-white/5 flex gap-2 items-end">
+      <textarea
         ref={inputRef}
-        className="flex-1 rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5 outline-none text-sm text-white placeholder-zinc-500 focus:border-indigo-500/30 transition"
+        rows={1}
+        className="flex-1 rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5 outline-none text-sm text-white placeholder-zinc-500 focus:border-indigo-500/30 transition resize-none overflow-y-auto break-words"
+        style={{ maxHeight: 160 }}
         placeholder={placeholder}
         value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+        onChange={(e) => { setText(e.target.value); autoResize(); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+        }}
         disabled={busy}
       />
       <button
         className={cx(
-          "rounded-xl px-4 py-2.5 font-semibold text-sm transition-all disabled:opacity-30",
+          "rounded-xl px-4 py-2.5 font-semibold text-sm transition-all disabled:opacity-30 shrink-0",
           `bg-gradient-to-r ${gradient} text-white shadow-lg`
         )}
         disabled={busy || !text.trim()}
