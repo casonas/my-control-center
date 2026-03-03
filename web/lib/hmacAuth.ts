@@ -55,7 +55,7 @@ export async function verifyHmac(req: Request): Promise<void> {
   }
   const age = Math.abs(Date.now() - ts);
   if (age > MAX_AGE_MS) {
-    throw new HmacAuthError("Request expired (timestamp too old or too far in the future)");
+    throw new HmacAuthError("Request timestamp outside acceptable window");
   }
 
   // Verify HMAC

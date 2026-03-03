@@ -244,11 +244,11 @@ export async function POST(req: Request) {
           const dedupeKey = makeDedupe(input.skillId, plan.moduleTitle, plan.lessonTitle);
 
           if (existingKeys.has(dedupeKey)) {
-            // Update existing lesson content
+            // Only update auto-generated lessons — never overwrite manual edits
             await db
               .prepare(
                 `UPDATE skill_lessons SET content_md = ?, resources_json = ?, duration_minutes = ?, updated_at = ?
-                 WHERE user_id = ? AND skill_id = ? AND dedupe_key = ?`
+                 WHERE user_id = ? AND skill_id = ? AND dedupe_key = ? AND (source = 'auto' OR source IS NULL)`
               )
               .bind(
                 plan.contentMd,

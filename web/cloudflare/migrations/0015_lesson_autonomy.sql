@@ -8,7 +8,7 @@
 -- ──── 1. Lesson autonomy columns ─────────────────────
 
 -- Track how lessons were created (manual vs auto-generated)
-ALTER TABLE skill_lessons ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE skill_lessons ADD COLUMN source TEXT DEFAULT 'manual';
 -- Dedupe key for idempotent upserts (e.g. "skill_id:module:lesson" hash)
 ALTER TABLE skill_lessons ADD COLUMN dedupe_key TEXT;
 -- Quality score 0–100 for generated lessons

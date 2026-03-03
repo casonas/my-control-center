@@ -47,11 +47,11 @@ export async function acquireIdempotencyKey(
 
   if (existing) {
     // If completed and not expired, return cached result
-    if (existing.status === "completed" && existing.expires_at > now) {
+    if (existing.status === "completed" && new Date(existing.expires_at) > new Date(now)) {
       return { acquired: false, existing };
     }
     // If expired or failed, allow re-acquisition
-    if (existing.expires_at <= now || existing.status === "failed") {
+    if (new Date(existing.expires_at) <= new Date(now) || existing.status === "failed") {
       await db
         .prepare(
           `UPDATE idempotency_keys SET status = 'processing', result_json = NULL, completed_at = NULL, expires_at = ?, created_at = ?

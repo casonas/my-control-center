@@ -11,18 +11,22 @@ export interface Env {
   CRON_SECRET: string;
 }
 
-// ─── Cron schedule → job mapping ─────────────────────
+// ─── Cron schedule → job mapping (matches 5 wrangler.toml triggers) ──
 const SCHEDULE_MAP: Record<string, string[]> = {
-  "research_scan": ["0 * * * *"],
-  "stocks_refresh": ["*/10 * * * *"],
-  "stocks_news_scan": ["15 * * * *"],
-  "skills_radar_scan": ["0 8 * * *"],
-  "jobs_refresh": ["0 9,13,18 * * 1-5"],
-  "sports_refresh_nba": ["*/15 * * * *"],
-  // New autonomous jobs
-  "lesson_plan_refresh": ["0 6 * * *"],
+  // Every 10 min
+  "stocks_refresh":        ["*/10 * * * *"],
+  "sports_refresh_nba":    ["*/10 * * * *"],
+  // Hourly
+  "research_scan":         ["0 * * * *"],
+  "stocks_news_scan":      ["0 * * * *"],
+  // Every 3 hours
   "industry_radar_refresh": ["0 */3 * * *"],
-  "memory_summarize": ["0 3 * * *"],
+  // Daily 6am UTC
+  "lesson_plan_refresh":   ["0 6 * * *"],
+  "skills_radar_scan":     ["0 6 * * *"],
+  "memory_summarize":      ["0 6 * * *"],
+  // Weekday 9am/1pm/6pm
+  "jobs_refresh":          ["0 9,13,18 * * 1-5"],
 };
 
 function getJobsForCron(cron: string): string[] {
@@ -33,7 +37,7 @@ function getJobsForCron(cron: string): string[] {
     }
   }
   if (jobs.length === 0) {
-    return Object.keys(SCHEDULE_MAP);
+    console.warn(`[cron] No jobs matched cron expression: "${cron}"`);
   }
   return jobs;
 }

@@ -8,18 +8,18 @@
 import type { D1Database } from "./d1";
 import { parseFeed, inferTags, DEFAULT_SOURCES } from "./rss";
 
-// ─── Schedule definitions ────────────────────────────
+// ─── Schedule definitions (matches 5 worker cron triggers) ───
 export const CRON_SCHEDULES: Record<string, { cron: string; description: string }> = {
   research_scan:          { cron: "0 * * * *",           description: "Hourly RSS research scan" },
   jobs_refresh:           { cron: "0 9,13,18 * * 1-5",   description: "Weekday job feed refresh (9am/1pm/6pm)" },
   stocks_refresh:         { cron: "*/10 * * * *",         description: "Stock quotes + indices every 10 min" },
-  stocks_news_scan:       { cron: "15 * * * *",           description: "Stock news RSS scan hourly at :15" },
-  sports_refresh_nba:     { cron: "*/15 * * * *",         description: "NBA scores every 15 min" },
-  sports_refresh_nfl:     { cron: "0 */4 * * *",          description: "NFL scores every 4 hours" },
-  skills_radar_scan:      { cron: "0 8 * * *",            description: "Daily skills radar at 8am" },
+  stocks_news_scan:       { cron: "0 * * * *",            description: "Stock news RSS scan hourly" },
+  sports_refresh_nba:     { cron: "*/10 * * * *",         description: "NBA scores every 10 min" },
+  sports_refresh_nfl:     { cron: "*/10 * * * *",         description: "NFL scores every 10 min" },
+  skills_radar_scan:      { cron: "0 6 * * *",            description: "Daily skills radar at 6am" },
   lesson_plan_refresh:    { cron: "0 6 * * *",            description: "Daily lesson plan refresh at 6am" },
   industry_radar_refresh: { cron: "0 */3 * * *",          description: "Industry radar refresh every 3 hours" },
-  memory_summarize:       { cron: "0 3 * * *",            description: "Nightly session summarization at 3am" },
+  memory_summarize:       { cron: "0 6 * * *",            description: "Nightly session summarization at 6am" },
 };
 
 // ─── Update cron_runs helper ─────────────────────────

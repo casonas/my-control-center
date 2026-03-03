@@ -9,6 +9,11 @@
 
 import type { D1Database } from "./d1";
 
+// ─── Constants ───────────────────────────────────────
+
+const ROLE_USER = "user";
+const ROLE_AGENT = "agent";
+
 // ─── Types ───────────────────────────────────────────
 
 export type MemoryCategory =
@@ -237,12 +242,12 @@ export async function summarizeSession(
   if (!msgs.results || msgs.results.length === 0) return null;
 
   const userTopics = msgs.results
-    .filter((m) => m.role === "user")
+    .filter((m) => m.role === ROLE_USER)
     .map((m) => m.content.slice(0, 80))
     .slice(0, 5);
 
   const agentHighlights = msgs.results
-    .filter((m) => m.role === "agent")
+    .filter((m) => m.role === ROLE_AGENT)
     .map((m) => {
       // First sentence or first 80 chars
       const dot = m.content.indexOf(".");
