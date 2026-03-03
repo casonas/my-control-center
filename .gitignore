@@ -1,14 +1,29 @@
 # dependencies/build output
-#FIZ
 **/node_modules/
 **/.next/
 **/.turbo/
+**/dist/
+**/build/
 
 # env
 **/.env.local
 **/.env
+**/.dev.vars
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Cloudflare local artifacts
+**/.wrangler/
+**/d1-local/
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+
+# temp / backup files
+*.bak
+*.tmp
+*.swp
+*~

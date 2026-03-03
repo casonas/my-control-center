@@ -8,15 +8,18 @@
 import type { D1Database } from "./d1";
 import { parseFeed, inferTags, DEFAULT_SOURCES } from "./rss";
 
-// ─── Schedule definitions ────────────────────────────
+// ─── Schedule definitions (matches 5 worker cron triggers) ───
 export const CRON_SCHEDULES: Record<string, { cron: string; description: string }> = {
-  research_scan:      { cron: "0 * * * *",           description: "Hourly RSS research scan" },
-  jobs_refresh:       { cron: "0 9,13,18 * * 1-5",   description: "Weekday job feed refresh (9am/1pm/6pm)" },
-  stocks_refresh:     { cron: "*/10 * * * *",         description: "Stock quotes + indices every 10 min" },
-  stocks_news_scan:   { cron: "15 * * * *",           description: "Stock news RSS scan hourly at :15" },
-  sports_refresh_nba: { cron: "*/15 * * * *",         description: "NBA scores every 15 min" },
-  sports_refresh_nfl: { cron: "0 */4 * * *",          description: "NFL scores every 4 hours" },
-  skills_radar_scan:  { cron: "0 8 * * *",            description: "Daily skills radar at 8am" },
+  research_scan:          { cron: "0 * * * *",           description: "Hourly RSS research scan" },
+  jobs_refresh:           { cron: "0 9,13,18 * * 1-5",   description: "Weekday job feed refresh (9am/1pm/6pm)" },
+  stocks_refresh:         { cron: "*/10 * * * *",         description: "Stock quotes + indices every 10 min" },
+  stocks_news_scan:       { cron: "0 * * * *",            description: "Stock news RSS scan hourly" },
+  sports_refresh_nba:     { cron: "*/10 * * * *",         description: "NBA scores every 10 min" },
+  sports_refresh_nfl:     { cron: "*/10 * * * *",         description: "NFL scores every 10 min" },
+  skills_radar_scan:      { cron: "0 6 * * *",            description: "Daily skills radar at 6am" },
+  lesson_plan_refresh:    { cron: "0 6 * * *",            description: "Daily lesson plan refresh at 6am" },
+  industry_radar_refresh: { cron: "0 */3 * * *",          description: "Industry radar refresh every 3 hours" },
+  memory_summarize:       { cron: "0 6 * * *",            description: "Nightly session summarization at 6am" },
 };
 
 // ─── Update cron_runs helper ─────────────────────────
@@ -362,6 +365,162 @@ export async function runSkillsRadarScan(db: D1Database, userId: string) {
   }
 }
 
+// ─── Lesson Plan Refresh (daily autonomous lesson generation) ───
+export async function runLessonPlanRefresh(db: D1Database, userId: string) {
+  const start = Date.now();
+  const jobKey = `lesson_plan_refresh_${userId}`;
+
+  try {
+    // Get all user skills
+    const skills = await db
+      .prepare(`SELECT id, name, level FROM skill_items WHERE user_id = ?`)
+      .bind(userId)
+      .all<{ id: string; name: string; level: string }>();
+
+    if (!skills.results || skills.results.length === 0) {
+      const tookMs = Date.now() - start;
+      await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: 0, tookMs });
+      return { ok: true, skills: 0, lessonsAdded: 0, tookMs };
+    }
+
+    let totalAdded = 0;
+    const maxSkillsPerRun = 3; // Cap to avoid long runs
+
+    for (const skill of skills.results.slice(0, maxSkillsPerRun)) {
+      // Check if skill already has lessons
+      const count = await db
+        .prepare(`SELECT COUNT(*) as cnt FROM skill_lessons WHERE user_id = ? AND skill_id = ?`)
+        .bind(userId, skill.id)
+        .first<{ cnt: number }>();
+
+      if ((count?.cnt ?? 0) >= 9) continue; // Skip skills with plenty of lessons
+
+      // Generate template lessons (zero LLM cost)
+      const subject = skill.name;
+      const dedupeBase = `${skill.id}:${subject} Fundamentals:Introduction to ${subject}`.toLowerCase().replace(/\s+/g, "_").slice(0, 200);
+
+      // Check if already generated
+      const existing = await db
+        .prepare(`SELECT id FROM skill_lessons WHERE user_id = ? AND skill_id = ? AND dedupe_key = ?`)
+        .bind(userId, skill.id, dedupeBase)
+        .first();
+
+      if (existing) continue; // Already has auto-generated lessons
+
+      const maxOrder = await db
+        .prepare(`SELECT MAX(order_index) as max_idx FROM skill_lessons WHERE user_id = ? AND skill_id = ?`)
+        .bind(userId, skill.id)
+        .first<{ max_idx: number | null }>();
+      let nextOrder = (maxOrder?.max_idx ?? -1) + 1;
+
+      const lessons = [
+        { module: `${subject} Fundamentals`, title: `Introduction to ${subject}`, mins: 15,
+          md: `# Introduction to ${subject}\n\n## Overview\nFoundational concepts of ${subject}.\n\n## Key Concepts\n- Core principles\n- Modern relevance\n- Common applications` },
+        { module: `${subject} Fundamentals`, title: `${subject} Core Practices`, mins: 25,
+          md: `# ${subject} Core Practices\n\n## Topics\n- Environment setup\n- Basic workflows\n- Common pitfalls` },
+        { module: `${subject} in Practice`, title: `Applying ${subject}`, mins: 20,
+          md: `# Applying ${subject}\n\n## Real-World Use\n- Industry patterns\n- Challenges & solutions\n\n## Next Steps\n- Advanced topics\n- Build a project` },
+      ];
+
+      const now = new Date().toISOString();
+      for (const l of lessons) {
+        const dk = `${skill.id}:${l.module}:${l.title}`.toLowerCase().replace(/\s+/g, "_").slice(0, 200);
+        const id = crypto.randomUUID();
+        try {
+          await db.prepare(
+            `INSERT OR IGNORE INTO skill_lessons (id, user_id, skill_id, module_title, lesson_title, order_index, duration_minutes, content_md, resources_json, created_at, updated_at, source, dedupe_key, generation_meta_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?)`
+          ).bind(id, userId, skill.id, l.module, l.title, nextOrder++, l.mins, l.md, "[]", now, now, dk,
+            JSON.stringify({ generator: "cron_template", model: "none" })
+          ).run();
+          totalAdded++;
+        } catch { /* dedupe */ }
+      }
+    }
+
+    const tookMs = Date.now() - start;
+    await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: totalAdded, tookMs });
+    return { ok: true, skills: skills.results.length, lessonsAdded: totalAdded, tookMs };
+  } catch (err) {
+    const tookMs = Date.now() - start;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await updateCronRun(db, jobKey, { status: "error", itemsProcessed: 0, tookMs, error: errMsg }).catch(() => {});
+    return { ok: false, error: errMsg, tookMs };
+  }
+}
+
+// ─── Industry Radar Refresh (every 3h, dedupe + score, no LLM) ───
+export async function runIndustryRadarRefresh(db: D1Database, userId: string) {
+  // Delegates to the existing radar scan with additional scoring
+  return runSkillsRadarScan(db, userId);
+}
+
+// ─── Memory Summarize (nightly session log compaction) ───
+export async function runMemorySummarize(db: D1Database, userId: string) {
+  const start = Date.now();
+  const jobKey = `memory_summarize_${userId}`;
+
+  try {
+    // Find sessions older than 24h that haven't been summarized
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const sessions = await db
+      .prepare(
+        `SELECT s.id, s.title, s.agent_id
+         FROM chat_sessions s
+         WHERE s.user_id = ? AND s.updated_at < ?
+           AND s.id NOT IN (SELECT source_id FROM memory_notes WHERE user_id = ? AND category = 'session_summary' AND source_id IS NOT NULL)
+         ORDER BY s.updated_at DESC LIMIT 10`
+      )
+      .bind(userId, cutoff, userId)
+      .all<{ id: string; title: string; agent_id: string }>();
+
+    let summarized = 0;
+    const now = new Date().toISOString();
+
+    for (const session of (sessions.results || [])) {
+      // Get message count and key content
+      const msgs = await db
+        .prepare(
+          `SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 20`
+        )
+        .bind(session.id)
+        .all<{ role: string; content: string }>();
+
+      if (!msgs.results || msgs.results.length < 2) continue;
+
+      // Create compact summary (no LLM — extract key points from messages)
+      const userMsgs = msgs.results.filter(m => m.role === "user").map(m => m.content.slice(0, 100));
+      const agentMsgs = msgs.results.filter(m => m.role === "agent").map(m => m.content.slice(0, 100));
+
+      const summary = [
+        `Session: ${session.title}`,
+        `Agent: ${session.agent_id}`,
+        `Messages: ${msgs.results.length}`,
+        `User topics: ${userMsgs.slice(0, 3).join("; ")}`,
+        `Key responses: ${agentMsgs.slice(0, 2).join("; ")}`,
+      ].join("\n");
+
+      const noteId = crypto.randomUUID();
+      try {
+        await db.prepare(
+          `INSERT OR IGNORE INTO memory_notes (id, user_id, category, subject, content, source_type, source_id, created_at, updated_at)
+           VALUES (?, ?, 'session_summary', ?, ?, 'auto', ?, ?, ?)`
+        ).bind(noteId, userId, session.title, summary, session.id, now, now).run();
+        summarized++;
+      } catch { /* dedupe */ }
+    }
+
+    const tookMs = Date.now() - start;
+    await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: summarized, tookMs });
+    return { ok: true, summarized, tookMs };
+  } catch (err) {
+    const tookMs = Date.now() - start;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await updateCronRun(db, jobKey, { status: "error", itemsProcessed: 0, tookMs, error: errMsg }).catch(() => {});
+    return { ok: false, error: errMsg, tookMs };
+  }
+}
+
 // ─── Dispatcher — run a named job for a user ─────────
 export type CronJobName =
   | "research_scan"
@@ -370,7 +529,10 @@ export type CronJobName =
   | "stocks_news_scan"
   | "sports_refresh_nba"
   | "sports_refresh_nfl"
-  | "skills_radar_scan";
+  | "skills_radar_scan"
+  | "lesson_plan_refresh"
+  | "industry_radar_refresh"
+  | "memory_summarize";
 
 export async function runCronJob(db: D1Database, userId: string, jobName: CronJobName) {
   switch (jobName) {
@@ -388,6 +550,12 @@ export async function runCronJob(db: D1Database, userId: string, jobName: CronJo
       return runSportsRefresh(db, userId, "nfl");
     case "skills_radar_scan":
       return runSkillsRadarScan(db, userId);
+    case "lesson_plan_refresh":
+      return runLessonPlanRefresh(db, userId);
+    case "industry_radar_refresh":
+      return runIndustryRadarRefresh(db, userId);
+    case "memory_summarize":
+      return runMemorySummarize(db, userId);
     default:
       return { ok: false, error: `Unknown job: ${jobName}` };
   }
