@@ -15,6 +15,14 @@ import {
   getSession,
   type AgentSession,
 } from "@/lib/agentSession";
+import {
+  getWorkspace,
+  switchToTab,
+  switchToAgent,
+  setWorkspace,
+  setLastSessionForAgent,
+} from "@/lib/workspace";
+import { useChatScroll } from "@/hooks/useChatScroll";
 
 function cx(...c: (string | false | undefined | null)[]) {
   return c.filter(Boolean).join(" ");
@@ -117,7 +125,8 @@ export default function Home() {
   const [authed, setAuthed] = useState<boolean | null>(null);
 
   /* ─── UI ─── */
-  const [activeTab, setActiveTab] = useState<TabKey>("home");
+  const [activeTab, setActiveTabRaw] = useState<TabKey>(() => getWorkspace().tab);
+  const [activeAgentIdFromWs] = useState(() => getWorkspace().agentId);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -127,12 +136,25 @@ export default function Home() {
 
   /* ─── Agents ─── */
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState<string>("main");
+  const [activeAgentId, setActiveAgentIdRaw] = useState<string>(activeAgentIdFromWs);
   const [agentSessions, setAgentSessions] = useState<Record<string, AgentSession>>({});
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [collabMode, setCollabMode] = useState(false);
   const [collabAgentIds, setCollabAgentIds] = useState<Set<string>>(new Set());
   const [addAgentOpen, setAddAgentOpen] = useState(false);
+
+  /* ─── Workspace-aware switching ─── */
+  const handleSwitchTab = useCallback((tab: TabKey) => {
+    const ws = switchToTab(tab);
+    setActiveTabRaw(ws.tab);
+    setActiveAgentIdRaw(ws.agentId);
+  }, []);
+
+  const handleSwitchAgent = useCallback((agentId: string) => {
+    const ws = switchToAgent(agentId);
+    setActiveTabRaw(ws.tab);
+    setActiveAgentIdRaw(ws.agentId);
+  }, []);
 
   /* ─── Chat ─── */
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -140,11 +162,65 @@ export default function Home() {
   const [suggestedText, setSuggestedText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const [themeAccent, setThemeAccent] = useState(THEME_COLORS.DEFAULT);
+  const { scrollRef: chatScrollRef, atBottom: chatAtBottom, unreadCount: chatUnread, jumpToBottom: chatJumpToBottom, snapToBottom: chatSnapToBottom, onNewMessage: chatOnNewMessage, onStreamDelta: chatOnStreamDelta } = useChatScroll();
 
   // Per-agent message cache — survives agent switching
   const chatCacheRef = useRef<Record<string, { msgs: Msg[]; convId: string | null }>>({});
+
+  /* ─── Chat sessions (D1-backed history) ─── */
+  interface ChatSessionItem { id: string; agent_id: string; title: string; updated_at: string; pinned: number }
+  const [chatSessions, setChatSessions] = useState<ChatSessionItem[]>([]);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  const loadSessions = useCallback(async (agentId: string) => {
+    try {
+      const data = await apiGet<{ sessions: ChatSessionItem[] }>(`/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
+      setChatSessions(data.sessions || []);
+    } catch {
+      // D1 not available — non-fatal
+      setChatSessions([]);
+    }
+  }, []);
+
+  // Reload sessions when agent changes
+  useEffect(() => {
+    if (authed) loadSessions(activeAgentId);
+  }, [activeAgentId, authed, loadSessions]);
+
+  async function handleNewChat() {
+    try {
+      const data = await apiPost<{ sessionId?: string; conversationId?: string }>("/chat/sessions", { agentId: activeAgentId });
+      const newId = data.sessionId || data.conversationId || crypto.randomUUID();
+      setConversationId(newId);
+      setMessages([]);
+      chatSnapToBottom();
+      loadSessions(activeAgentId);
+    } catch {
+      // Fall back to conversations endpoint
+      const data = await apiPost<{ conversationId: string }>("/conversations", { agentId: activeAgentId });
+      setConversationId(data.conversationId);
+      setMessages([]);
+    }
+    setSessionsOpen(false);
+  }
+
+  async function handleSelectSession(sessionId: string) {
+    try {
+      const data = await apiGet<{ session: ChatSessionItem; messages: { role: string; content: string }[] }>(`/chat/sessions/${sessionId}`);
+      setConversationId(sessionId);
+      setMessages((data.messages || []).map((m) => ({
+        role: m.role === "user" ? "user" as const : "agent" as const,
+        content: m.content,
+      })));
+      chatSnapToBottom();
+    } catch {
+      // D1 not available — just switch the ID
+      setConversationId(sessionId);
+      setMessages([]);
+    }
+    setSessionsOpen(false);
+  }
 
   /* ─── Notes ─── */
   const [notesTick, setNotesTick] = useState(0);
@@ -189,7 +265,7 @@ export default function Home() {
       const list = [...apiAgents, ...custom];
       setAgents(list);
       const nextId = list.find((a) => a.id === activeAgentId)?.id ? activeAgentId : list[0]?.id || "main";
-      setActiveAgentId(nextId);
+      handleSwitchAgent(nextId);
 
       // Warm up all agents immediately — no cold starts
       connectAll(list);
@@ -197,7 +273,7 @@ export default function Home() {
       setAuthed(false);
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [activeAgentId]);
+  }, [activeAgentId, handleSwitchAgent]);
 
   useEffect(() => { refreshAuthAndBootstrap(); return () => { disconnectAll(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -227,9 +303,13 @@ export default function Home() {
     newConversation(activeAgentId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [activeAgentId, authed, agents.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep cache in sync as messages stream in
+  // Keep cache in sync as messages stream in + persist sessionId to workspace
   useEffect(() => {
     chatCacheRef.current[activeAgentId] = { msgs: messages, convId: conversationId };
+    if (conversationId) {
+      setLastSessionForAgent(activeAgentId, conversationId);
+      setWorkspace({ sessionId: conversationId });
+    }
   }, [messages, conversationId, activeAgentId]);
 
   async function send(userText: string) {
@@ -242,6 +322,7 @@ export default function Home() {
       : [activeAgentId];
 
     setMessages((m) => [...m, { role: "user", content: userText }, { role: "agent", content: "" }]);
+    chatOnNewMessage();
     setBusy(true);
     try {
       // Pass session + agent routing headers for Telegram-speed dispatch
@@ -272,6 +353,7 @@ export default function Home() {
               if (last?.role === "agent") last.content += clean;
               return copy;
             });
+            chatOnStreamDelta();
           }
         },
         undefined,
@@ -285,6 +367,7 @@ export default function Home() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      loadSessions(activeAgentId);
     }
   }
 
@@ -296,8 +379,8 @@ export default function Home() {
 
   const clearSuggestion = useCallback(() => setSuggestedText(""), []);
 
-  // Auto-scroll chat
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Snap chat to bottom when switching agents (messages replaced)
+  useEffect(() => { chatSnapToBottom(); }, [activeAgentId, chatSnapToBottom]);
 
   // Keyboard shortcut: Cmd+K for search
   useEffect(() => {
@@ -309,10 +392,35 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Search handler
+  // Search handler — tries API (D1) first, falls back to localStorage
   useEffect(() => {
     if (!searchQuery.trim()) { setSearchResults([]); return; }
-    const timer = setTimeout(() => setSearchResults(searchAll(searchQuery, 15)), 200);
+    const timer = setTimeout(async () => {
+      try {
+        const data = await apiGet<{ results: Record<string, { id: string; title: string; preview: string; type: string }[]> }>(`/search?q=${encodeURIComponent(searchQuery)}`);
+        const apiResults: Doc[] = [];
+        for (const [collection, items] of Object.entries(data.results || {})) {
+          for (const item of items) {
+            apiResults.push({
+              id: item.id,
+              collection,
+              searchText: `${item.title} ${item.preview}`,
+              tags: [item.type],
+              meta: item,
+              createdAt: "",
+              updatedAt: "",
+            });
+          }
+        }
+        if (apiResults.length > 0) {
+          setSearchResults(apiResults);
+          return;
+        }
+      } catch {
+        // D1/API not available — fall through to localStorage
+      }
+      setSearchResults(searchAll(searchQuery, 15));
+    }, 250);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
@@ -372,7 +480,7 @@ export default function Home() {
             {TABS.map((t) => (
               <button
                 key={t.key}
-                onClick={() => setActiveTab(t.key)}
+                onClick={() => handleSwitchTab(t.key)}
                 className={cx(
                   "px-3 py-2 rounded-xl text-xs font-medium transition-all",
                   activeTab === t.key
@@ -407,7 +515,7 @@ export default function Home() {
           {TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => setActiveTab(t.key)}
+              onClick={() => handleSwitchTab(t.key)}
               className={cx(
                 "whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-medium transition-all shrink-0",
                 activeTab === t.key
@@ -443,12 +551,6 @@ export default function Home() {
       busy: "bg-amber-500",
       disconnected: "bg-zinc-600",
     };
-
-    async function triggerScan(agentId: string) {
-      try {
-        await apiPost("/agents/scan", { agentId, scope: "all" });
-      } catch { /* ignore */ }
-    }
 
     return (
       <aside className={cx(
@@ -492,7 +594,7 @@ export default function Home() {
                       )}
 
                       <button
-                        onClick={() => setActiveAgentId(a.id)}
+                        onClick={() => handleSwitchAgent(a.id)}
                         className={cx(
                           "flex-1 text-left rounded-xl px-2.5 py-2 transition-all min-w-0",
                           a.id === activeAgentId
@@ -528,7 +630,7 @@ export default function Home() {
                                   className="h-3 w-3 rounded border-zinc-600 bg-transparent accent-indigo-500 shrink-0" />
                               )}
                               <button
-                                onClick={() => setActiveAgentId(sub.id)}
+                                onClick={() => handleSwitchAgent(sub.id)}
                                 className={cx(
                                   "flex-1 text-left rounded-lg px-2 py-1.5 transition-all min-w-0",
                                   sub.id === activeAgentId ? "bg-white/10 border border-white/10" : "hover:bg-white/5"
@@ -570,11 +672,11 @@ export default function Home() {
           <div className="glass-light rounded-2xl p-3">
             <div className="text-xs font-semibold text-zinc-100 mb-2">⚡ Quick Actions</div>
             <div className="space-y-1">
-              <button onClick={() => { if (activeAgent) triggerScan(activeAgent.id); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
-              <button onClick={() => setNotesOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
+              <button onClick={() => { handleSwitchTab("research"); apiPost("/research/scan", {}).catch(() => {}); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🌐 Scan Web</button>
+              <button onClick={() => { handleSwitchTab("notes"); setNotesOpen(true); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">📝 Knowledge Base</button>
               <button onClick={() => setSearchOpen(true)} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🔍 Search Everything</button>
-              <button onClick={() => setActiveTab("skills")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
-              <button onClick={() => setActiveTab("jobs")} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
+              <button onClick={() => { handleSwitchTab("skills"); setTimeout(() => document.getElementById("skills-continue")?.scrollIntoView({ behavior: "smooth" }), 100); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">🧠 Continue Learning</button>
+              <button onClick={() => { handleSwitchTab("jobs"); apiPost("/jobs/refresh", {}).catch(() => {}); }} className="w-full text-left rounded-lg hover:bg-white/5 px-2.5 py-1.5 text-xs text-zinc-400 transition">💼 Check Job Feed</button>
             </div>
           </div>
         </div>
@@ -629,8 +731,8 @@ export default function Home() {
 
     return (
       <section className={cx("glass-light rounded-2xl flex flex-col min-h-[60vh] lg:min-h-[75vh]", glowMap[activeTab])}>
-        {/* Chat header */}
-        <div className="p-3 border-b border-white/5 flex items-center justify-between">
+        {/* A) Sticky header with session controls */}
+        <div className="shrink-0 p-3 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-base">{activeAgent?.emoji || "🤖"}</span>
             <div>
@@ -646,13 +748,46 @@ export default function Home() {
               </div>
             </div>
           </div>
-          <div className="text-[10px] text-zinc-600">
-            {conversationId ? `#${conversationId.slice(0, 6)}` : "—"}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleNewChat}
+              className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
+              title="New chat"
+            >＋ New</button>
+            <button
+              onClick={() => setSessionsOpen((s) => !s)}
+              className="text-[10px] text-zinc-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg px-2 py-1 transition"
+              title="Chat history"
+            >📋 {chatSessions.length > 0 ? chatSessions.length : ""}</button>
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 p-4 overflow-auto space-y-3">
+        {/* Session list dropdown */}
+        {sessionsOpen && (
+          <div className="shrink-0 border-b border-white/5 max-h-48 overflow-y-auto bg-black/20">
+            {chatSessions.length === 0 && (
+              <div className="text-[10px] text-zinc-500 text-center py-3">No saved sessions</div>
+            )}
+            {chatSessions.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => handleSelectSession(s.id)}
+                className={cx(
+                  "w-full text-left px-3 py-2 text-xs transition hover:bg-white/5 flex items-center gap-2",
+                  s.id === conversationId ? "text-white bg-white/5" : "text-zinc-400"
+                )}
+              >
+                {s.pinned ? "📌 " : ""}{s.title}
+                <span className="ml-auto text-[9px] text-zinc-600 shrink-0">
+                  {new Date(s.updated_at).toLocaleDateString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* B) Scrollable messages */}
+        <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
           {messages.length === 0 && (
             <div className="text-center py-8 animate-fade-in" role="status">
               <div className="text-3xl mb-3">{tabMeta.icon}</div>
@@ -696,10 +831,21 @@ export default function Home() {
               {error}
             </div>
           )}
-          <div ref={chatEndRef} />
         </div>
 
-        {/* Input — decoupled from parent state to prevent typing lag */}
+        {/* Jump to latest indicator */}
+        {!chatAtBottom && messages.length > 0 && (
+          <div className="shrink-0 flex justify-center -mt-10 relative z-10 pointer-events-none">
+            <button
+              onClick={chatJumpToBottom}
+              className="pointer-events-auto rounded-full bg-white/10 backdrop-blur border border-white/10 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/20 transition shadow-lg flex items-center gap-1.5"
+            >
+              ↓ Jump to latest{chatUnread > 0 && <span className="bg-indigo-500 text-white rounded-full px-1.5 text-[10px] font-semibold">{chatUnread}</span>}
+            </button>
+          </div>
+        )}
+
+        {/* C) Sticky input */}
         <MessageInput
           onSend={send}
           busy={busy}
@@ -740,21 +886,25 @@ export default function Home() {
               {searchResults.length === 0 && !searchQuery && (
                 <div className="py-8 text-center text-xs text-zinc-500">Type to search across all your data</div>
               )}
-              {searchResults.map((doc) => (
+              {searchResults.map((doc) => {
+                const collToTab: Record<string, TabKey> = { notes: "notes", assignments: "school", jobs: "jobs", research: "research", sessions: "home" };
+                const targetTab = collToTab[doc.collection] || "home";
+                return (
                 <button
                   key={doc.id}
                   className="w-full text-left rounded-xl px-3 py-2.5 hover:bg-white/5 transition"
-                  onClick={() => setSearchOpen(false)}
+                  onClick={() => { handleSwitchTab(targetTab); setSearchOpen(false); setSearchQuery(""); }}
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-zinc-500 uppercase bg-white/5 rounded px-1.5 py-0.5">{doc.collection}</span>
-                    <span className="text-xs text-white truncate">{doc.searchText.slice(0, 60)}</span>
+                    <span className="text-xs text-white truncate">{(doc.meta as Record<string, string>)?.title || doc.searchText.slice(0, 60)}</span>
                   </div>
                   <div className="text-[10px] text-zinc-500 mt-0.5 flex gap-2">
                     {doc.tags.slice(0, 3).map((t) => <span key={t} className="bg-white/5 rounded px-1">{t}</span>)}
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

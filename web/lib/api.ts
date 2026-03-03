@@ -109,6 +109,31 @@ export async function apiPost<T = unknown>(
   return res.json();
 }
 
+export async function apiPatch<T = unknown>(
+  path: string,
+  body: Record<string, unknown>,
+  init: RequestInit = {}
+): Promise<T> {
+  const res = await apiFetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    body: JSON.stringify(body),
+    ...init,
+  });
+  return res.json();
+}
+
+export async function apiDelete<T = unknown>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const res = await apiFetch(path, {
+    method: "DELETE",
+    ...init,
+  });
+  return res.json();
+}
+
 // ---- Auth ----
 // Returns a normalized AuthState your UI expects.
 export async function authMe(): Promise<AuthState> {

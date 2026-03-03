@@ -7,9 +7,9 @@ import {
   getAssignments, saveAssignment, deleteAssignment, toggleAssignment,
   getSkills, toggleLesson,
   getJobs, saveJob, toggleJobApplied,
-  getWatchlist,
   getResearch, toggleArticleRead, saveArticleNotes,
 } from "@/lib/store";
+import { apiGet, apiPost, apiPatch } from "@/lib/api";
 
 /* ────────── helpers ────────── */
 function cx(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(" "); }
@@ -246,7 +246,7 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
 /* ═══════════════════════════════════════════════════════
    SCHOOL — Notion + Blackboard + Email
    ═══════════════════════════════════════════════════════ */
-function SchoolWidgets({ assignments, notes, refresh }: {
+function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refresh }: {
   assignments: Assignment[]; notes: Note[]; refresh: () => void;
 }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -256,24 +256,114 @@ function SchoolWidgets({ assignments, notes, refresh }: {
   const [newPriority, setNewPriority] = useState<"low" | "medium" | "high">("medium");
   const [noteTitle, setNoteTitle] = useState("");
   const [noteContent, setNoteContent] = useState("");
+  const [filter, setFilter] = useState("all");
 
-  const schoolNotes = notes.filter((n) => n.tab === "school");
-  const pending = assignments.filter((a) => !a.completed);
-  const completed = assignments.filter((a) => a.completed);
+  // API-backed data
+  interface ApiAssignment {
+    id: string; title: string; due_at: string; status: string; priority?: string;
+    course_code?: string; course_name?: string; description?: string;
+  }
+  interface ApiNote { id: string; title: string; content_md: string; updated_at: string }
+  interface CalEvent { id: string; title: string; start: string; status: string }
 
-  function handleAddAssignment() {
+  const [apiAssignments, setApiAssignments] = useState<ApiAssignment[]>([]);
+  const [apiNotes, setApiNotes] = useState<ApiNote[]>([]);
+  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  const loadAssignments = useCallback(async (f: string) => {
+    try {
+      const d = await apiGet<{ assignments: ApiAssignment[] }>(`/school/assignments?filter=${f}`);
+      if (d.assignments) { setApiAssignments(d.assignments); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadNotes = useCallback(async () => {
+    try { const d = await apiGet<{ notes: ApiNote[] }>("/school/notes"); setApiNotes(d.notes || []); } catch { /* */ }
+  }, []);
+
+  const loadCalendar = useCallback(async () => {
+    try {
+      const from = new Date().toISOString().slice(0, 10);
+      const to = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const d = await apiGet<{ events: CalEvent[] }>(`/school/calendar?from=${from}&to=${to}`);
+      setCalEvents(d.events || []);
+    } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadAssignments(filter); loadNotes(); loadCalendar(); }, [filter, loadAssignments, loadNotes, loadCalendar]);
+
+  async function handleAddAssignment() {
     if (!newTitle.trim()) return;
-    saveAssignment({ title: newTitle.trim(), course: newCourse.trim(), dueDate: newDate, priority: newPriority });
+    if (hasApi) {
+      try {
+        const dueAt = newDate ? new Date(newDate).toISOString() : new Date(Date.now() + 7 * 86400000).toISOString();
+        await apiPost("/school/assignments", { title: newTitle.trim(), dueAt, priority: newPriority });
+        loadAssignments(filter);
+      } catch { /* fallback */ }
+    } else {
+      saveAssignment({ title: newTitle.trim(), course: newCourse.trim(), dueDate: newDate, priority: newPriority });
+      refresh();
+    }
     setNewTitle(""); setNewCourse(""); setNewDate(""); setNewPriority("medium"); setShowAdd(false);
-    refresh();
   }
 
-  function handleAddNote() {
-    if (!noteTitle.trim()) return;
-    saveNote({ tab: "school", title: noteTitle.trim(), content: noteContent });
-    setNoteTitle(""); setNoteContent("");
-    refresh();
+  async function handleToggleStatus(id: string, currentStatus: string) {
+    if (hasApi) {
+      const newStatus = currentStatus === "done" ? "open" : "done";
+      try { await apiPatch(`/school/assignments/${id}`, { status: newStatus }); loadAssignments(filter); }
+      catch { /* fallback */ }
+    } else {
+      toggleAssignment(id); refresh();
+    }
   }
+
+  async function handleDeleteAssignment(id: string) {
+    if (hasApi) {
+      try {
+        await apiPatch(`/school/assignments/${id}`, { status: "dropped" });
+        loadAssignments(filter);
+      } catch { /* fallback */ deleteAssignment(id); refresh(); }
+    } else {
+      deleteAssignment(id); refresh();
+    }
+  }
+
+  async function handleAddNote() {
+    if (!noteTitle.trim()) return;
+    if (hasApi) {
+      try { await apiPost("/school/notes", { title: noteTitle.trim(), contentMd: noteContent }); loadNotes(); }
+      catch { /* fallback */ }
+    } else {
+      saveNote({ tab: "school", title: noteTitle.trim(), content: noteContent });
+      refresh();
+    }
+    setNoteTitle(""); setNoteContent("");
+  }
+
+  function handleExportICS() {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+    window.open(`/api/school/calendar?from=${from}&to=${to}&format=ics`, "_blank");
+  }
+
+  // Merge display: prefer API, fallback to local
+  const schoolNotes = hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school");
+  const pending = hasApi
+    ? apiAssignments.filter((a) => ["open", "in_progress"].includes(a.status))
+    : localAssignments.filter((a) => !a.completed);
+  const completed = hasApi
+    ? apiAssignments.filter((a) => a.status === "done")
+    : localAssignments.filter((a) => a.completed);
+
+  // Calendar: group events by date
+  const calByDate = calEvents.reduce<Record<string, CalEvent[]>>((acc, ev) => {
+    const day = ev.start.slice(0, 10);
+    (acc[day] = acc[day] || []).push(ev);
+    return acc;
+  }, {});
+  const calDays = Object.keys(calByDate).sort();
 
   return (
     <div className="space-y-3">
@@ -284,23 +374,60 @@ function SchoolWidgets({ assignments, notes, refresh }: {
         <StatBox icon="📝" value={schoolNotes.length} label="Notes" />
       </div>
 
-      {/* Blackboard & Email */}
+      {/* Calendar / ICS controls */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => setShowCalendar(!showCalendar)}
+          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium border transition",
+            showCalendar ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>📅 Calendar</button>
+        <button onClick={handleExportICS}
+          className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs border border-white/5 hover:bg-white/10 transition">
+          ⬇ Export ICS
+        </button>
+        {/* Filter tabs */}
+        {(["all", "open", "due_soon", "late"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-2 py-1 rounded-lg text-[10px] font-medium border transition capitalize",
+            filter === f ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f === "due_soon" ? "Due Soon" : f}</button>
+        ))}
+      </div>
+
+      {/* Calendar view */}
+      {showCalendar && (
+        <Card title="Upcoming Calendar" icon="📅">
+          <div className="space-y-2 max-h-48 overflow-auto">
+            {calDays.length === 0 && <div className="text-[10px] text-zinc-500">No events in the next 30 days.</div>}
+            {calDays.map((day) => (
+              <div key={day}>
+                <div className="text-[10px] text-zinc-400 font-semibold mb-0.5">{new Date(day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
+                {calByDate[day].map((ev) => (
+                  <div key={ev.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-[10px]">
+                    <span className={cx("w-1.5 h-1.5 rounded-full", ev.status === "done" ? "bg-emerald-500" : "bg-violet-500")} />
+                    <span className="text-white truncate">{ev.title}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Connectors */}
       <div className="grid grid-cols-2 gap-2">
         <div className="glass-light rounded-xl p-3 animate-fade-in">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm">🎓</span>
             <span className="text-xs font-semibold text-zinc-100">Blackboard</span>
           </div>
-          <div className="text-[10px] text-zinc-400">Ask agent to sync your course schedule and due dates from Blackboard.</div>
-          <AgentStatus verb="ready to sync" />
+          <div className="text-[10px] text-zinc-400">Ask agent to sync from Blackboard.</div>
         </div>
         <div className="glass-light rounded-xl p-3 animate-fade-in">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm">📧</span>
             <span className="text-xs font-semibold text-zinc-100">Email</span>
           </div>
-          <div className="text-[10px] text-zinc-400">Connect email for assignment reminders and school notifications.</div>
-          <AgentStatus verb="monitoring inbox" />
+          <div className="text-[10px] text-zinc-400">Connect email for reminders.</div>
         </div>
       </div>
 
@@ -329,28 +456,41 @@ function SchoolWidgets({ assignments, notes, refresh }: {
         )}
         {pending.length === 0 && !showAdd && <EmptyState icon="🎉" text="No pending assignments" />}
         <div className="space-y-1.5 max-h-64 overflow-auto">
-          {pending.map((a) => (
-            <div key={a.id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
-              <button onClick={() => { toggleAssignment(a.id); refresh(); }} className="w-4 h-4 rounded border border-white/20 shrink-0 hover:border-violet-400 transition flex items-center justify-center text-[10px]">
-                {a.completed && "✓"}
-              </button>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs text-white truncate">{a.title}</div>
-                <div className="text-[10px] text-zinc-500">{a.course}{a.course && a.dueDate && " · "}{a.dueDate && relDate(a.dueDate)}</div>
+          {pending.map((a) => {
+            const id = hasApi ? (a as ApiAssignment).id : (a as Assignment).id;
+            const title = hasApi ? (a as ApiAssignment).title : (a as Assignment).title;
+            const course = hasApi ? ((a as ApiAssignment).course_code || "") : (a as Assignment).course;
+            const dueDate = hasApi ? (a as ApiAssignment).due_at : (a as Assignment).dueDate;
+            const priority = hasApi ? ((a as ApiAssignment).priority || "medium") : (a as Assignment).priority;
+            const status = hasApi ? (a as ApiAssignment).status : ((a as Assignment).completed ? "done" : "open");
+            return (
+              <div key={id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
+                <button onClick={() => handleToggleStatus(id, status)}
+                  className="w-4 h-4 rounded border border-white/20 shrink-0 hover:border-violet-400 transition flex items-center justify-center text-[10px]">
+                  {status === "done" && "✓"}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-white truncate">{title}</div>
+                  <div className="text-[10px] text-zinc-500">{course}{course && dueDate ? " · " : ""}{dueDate && relDate(dueDate)}</div>
+                </div>
+                <Badge color={priority === "high" ? "rose" : priority === "medium" ? "amber" : "emerald"}>{priority}</Badge>
+                <button onClick={() => handleDeleteAssignment(id)} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
               </div>
-              <Badge color={a.priority === "high" ? "rose" : a.priority === "medium" ? "amber" : "emerald"}>{a.priority}</Badge>
-              <button onClick={() => { deleteAssignment(a.id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
         {completed.length > 0 && (
           <div className="mt-3 pt-3 border-t border-white/5">
             <div className="text-[10px] text-zinc-500 mb-1.5">Completed ({completed.length})</div>
-            {completed.slice(0, 3).map((a) => (
-              <div key={a.id} className="flex items-center gap-2 px-3 py-1 text-xs text-zinc-500 line-through">
-                <span>✓</span><span className="truncate">{a.title}</span>
-              </div>
-            ))}
+            {completed.slice(0, 3).map((a) => {
+              const id = hasApi ? (a as ApiAssignment).id : (a as Assignment).id;
+              const title = hasApi ? (a as ApiAssignment).title : (a as Assignment).title;
+              return (
+                <div key={id} className="flex items-center gap-2 px-3 py-1 text-xs text-zinc-500 line-through">
+                  <span>✓</span><span className="truncate">{title}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </Card>
@@ -363,15 +503,20 @@ function SchoolWidgets({ assignments, notes, refresh }: {
           <button onClick={handleAddNote} disabled={!noteTitle.trim()} className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 disabled:opacity-30 transition">Save Note</button>
         </div>
         <div className="space-y-1.5 max-h-40 overflow-auto">
-          {schoolNotes.map((n) => (
-            <div key={n.id} className="flex items-start gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-white">{n.title}</div>
-                <div className="text-[10px] text-zinc-400 truncate">{n.content || "Empty note"}</div>
+          {(hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school")).map((n) => {
+            const id = hasApi ? (n as ApiNote).id : (n as Note).id;
+            const title = hasApi ? (n as ApiNote).title : (n as Note).title;
+            const content = hasApi ? (n as ApiNote).content_md : (n as Note).content;
+            return (
+              <div key={id} className="flex items-start gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-white">{title}</div>
+                  <div className="text-[10px] text-zinc-400 truncate">{content || "Empty note"}</div>
+                </div>
+                {!hasApi && <button onClick={() => { deleteNote(id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>}
               </div>
-              <button onClick={() => { deleteNote(n.id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
     </div>
@@ -381,58 +526,133 @@ function SchoolWidgets({ assignments, notes, refresh }: {
 /* ═══════════════════════════════════════════════════════
    JOBS — LinkedIn-style feed
    ═══════════════════════════════════════════════════════ */
-function JobsWidgets({ jobs, refresh }: { jobs: JobPosting[]; refresh: () => void }) {
+function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
   const [location, setLocation] = useState("");
   const [tags, setTags] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<string | null>(null);
 
-  const applied = jobs.filter((j) => j.applied).length;
-  const saved = jobs.filter((j) => !j.applied).length;
+  // API-backed data
+  interface ApiJob {
+    id: string; title: string; company: string; location?: string;
+    url: string; status: string; posted_at?: string; fetched_at: string;
+    remote?: number; tags_json?: string; notes?: string;
+  }
+  const [apiJobs, setApiJobs] = useState<ApiJob[]>([]);
+  const [pipeline, setPipeline] = useState<Record<string, number>>({});
+  interface ApiCompany { id: string; name: string; website_url?: string; linkedin_url?: string; notes?: string }
+  const [companies, setCompanies] = useState<ApiCompany[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+
+  const loadJobs = useCallback(async (status: string) => {
+    try {
+      const data = await apiGet<{ items: ApiJob[] }>(`/jobs/feed?status=${status}&limit=50`);
+      if (data.items) { setApiJobs(data.items); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadPipeline = useCallback(async () => {
+    try {
+      const data = await apiGet<{ pipeline: Record<string, number> }>("/jobs/pipeline");
+      if (data.pipeline) setPipeline(data.pipeline);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadCompanies = useCallback(async () => {
+    try {
+      const data = await apiGet<{ companies: ApiCompany[] }>("/companies");
+      if (data.companies) setCompanies(data.companies);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => { loadJobs(statusFilter); loadPipeline(); loadCompanies(); }, [statusFilter, loadJobs, loadPipeline, loadCompanies]);
+
+  async function handleRefresh() {
+    setRefreshing(true); setRefreshResult(null);
+    try {
+      const data = await apiPost<{ ok: boolean; newJobs?: number; error?: string }>("/jobs/refresh", {});
+      setRefreshResult(data.ok ? `Found ${data.newJobs || 0} new jobs` : (data.error || "Failed"));
+      loadJobs(statusFilter); loadPipeline();
+    } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleStatusChange(jobId: string, newStatus: string) {
+    try { await apiPatch(`/jobs/${jobId}`, { status: newStatus }); loadJobs(statusFilter); loadPipeline(); }
+    catch { /* fallback */ toggleJobApplied(jobId); refresh(); }
+  }
 
   function handleAdd() {
     if (!title.trim()) return;
     saveJob({ title: title.trim(), company: company.trim(), location: location.trim(), tags: tags.split(",").map((t: string) => t.trim()).filter(Boolean) });
     setTitle(""); setCompany(""); setLocation(""); setTags(""); setShowAdd(false);
-    refresh();
+    refresh(); loadJobs(statusFilter);
   }
+
+  // Display items
+  const displayJobs = hasApi ? apiJobs : localJobs.map((j) => ({
+    id: j.id, title: j.title, company: j.company, location: j.location,
+    url: "", status: j.applied ? "applied" : "saved", posted_at: "", fetched_at: "",
+    tags_json: JSON.stringify(j.tags),
+  }));
+
+  const pSaved = pipeline.saved || pipeline.new || 0;
+  const pNew = pipeline.new || 0;
+  const pApplied = pipeline.applied || 0;
+  const pInterview = pipeline.interview || 0;
+  const pOffer = pipeline.offer || 0;
+
+  const statuses = ["all", "new", "saved", "applied", "interview", "offer", "rejected", "dismissed"];
 
   return (
     <div className="space-y-3">
-      {/* Stats */}
       <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="💼" value={jobs.length} label="Total" />
-        <StatBox icon="✅" value={applied} label="Applied" />
-        <StatBox icon="📌" value={saved} label="Saved" />
+        <StatBox icon="💼" value={displayJobs.length} label="Total" />
+        <StatBox icon="✅" value={pApplied} label="Applied" />
+        <StatBox icon="🆕" value={pNew + pSaved} label="New/Saved" />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-medium hover:bg-emerald-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh Feed"}
+        </button>
+        {refreshResult && <span className="text-[10px] text-zinc-400">{refreshResult}</span>}
       </div>
 
       <AgentStatus verb="scanning for new cybersecurity postings" />
 
-      {/* Application pipeline */}
+      {/* Pipeline */}
       <Card title="Pipeline" icon="📊">
         <div className="flex gap-1">
-          <div className="flex-1 text-center rounded-lg bg-emerald-500/10 py-2">
-            <div className="text-sm font-bold text-emerald-400">{saved}</div>
-            <div className="text-[10px] text-zinc-400">Saved</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-cyan-500/10 py-2">
-            <div className="text-sm font-bold text-cyan-400">{applied}</div>
-            <div className="text-[10px] text-zinc-400">Applied</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-violet-500/10 py-2">
-            <div className="text-sm font-bold text-violet-400">0</div>
-            <div className="text-[10px] text-zinc-400">Interview</div>
-          </div>
-          <div className="text-zinc-600 self-center">→</div>
-          <div className="flex-1 text-center rounded-lg bg-amber-500/10 py-2">
-            <div className="text-sm font-bold text-amber-400">0</div>
-            <div className="text-[10px] text-zinc-400">Offer</div>
-          </div>
+          {[
+            { label: "New", val: pNew, color: "blue" },
+            { label: "Saved", val: pSaved, color: "emerald" },
+            { label: "Applied", val: pApplied, color: "cyan" },
+            { label: "Interview", val: pInterview, color: "violet" },
+            { label: "Offer", val: pOffer, color: "amber" },
+          ].map((s) => (
+            <div key={s.label} className={`flex-1 text-center rounded-lg bg-${s.color}-500/10 py-2`}>
+              <div className={`text-sm font-bold text-${s.color}-400`}>{s.val}</div>
+              <div className="text-[10px] text-zinc-400">{s.label}</div>
+            </div>
+          ))}
         </div>
       </Card>
+
+      {/* Status filter */}
+      <div className="flex gap-1 overflow-auto pb-1">
+        {statuses.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} className={cx(
+            "px-2.5 py-1 rounded-lg text-[10px] font-medium border transition whitespace-nowrap capitalize",
+            statusFilter === s ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{s}</button>
+        ))}
+      </div>
 
       {/* Job Feed */}
       <Card title="Job Feed" icon="📋" actions={
@@ -452,28 +672,66 @@ function JobsWidgets({ jobs, refresh }: { jobs: JobPosting[]; refresh: () => voi
           </div>
         )}
         <div className="space-y-2 max-h-96 overflow-auto">
-          {jobs.map((j) => (
+          {displayJobs.length === 0 && (
+            <div className="text-center py-6 text-xs text-zinc-500">No jobs. Click Refresh Feed to scan.</div>
+          )}
+          {displayJobs.map((j) => {
+            const jobTags: string[] = j.tags_json ? JSON.parse(j.tags_json) : [];
+            return (
             <div key={j.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-white/10 flex items-center justify-center text-sm font-bold text-white shrink-0">
                   {j.company.charAt(0)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-white">{j.title}</div>
-                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location}</div>
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {j.tags.map((t) => <Badge key={t} color="emerald">{t}</Badge>)}
+                  <a href={j.url || "#"} target="_blank" rel="noopener noreferrer"
+                    className="text-xs font-semibold text-white hover:underline">
+                    {j.title} {j.url ? "↗" : ""}
+                  </a>
+                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    <Badge color={j.status === "applied" ? "cyan" : j.status === "interview" ? "violet" : "emerald"}>{j.status}</Badge>
+                    {jobTags.map((t: string) => <Badge key={t} color="zinc">{t}</Badge>)}
+                  </div>
+                  {/* LinkedIn links */}
+                  <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition">
+                    <a href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(j.title + " " + j.company)}`}
+                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🔗 LinkedIn Jobs</a>
+                    <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(j.company)}`}
+                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🏢 Company</a>
                   </div>
                 </div>
-                <button
-                  onClick={() => { toggleJobApplied(j.id); refresh(); }}
-                  className={cx("shrink-0 px-2 py-1 rounded-lg text-[10px] font-medium border transition",
-                    j.applied ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 text-zinc-400 border-white/10 hover:border-emerald-500/30"
+                <div className="flex flex-col gap-1 shrink-0">
+                  {j.status !== "applied" && (
+                    <button onClick={() => hasApi ? handleStatusChange(j.id, "applied") : (() => { toggleJobApplied(j.id); refresh(); })()}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">Apply</button>
                   )}
-                >
-                  {j.applied ? "✓ Applied" : "Apply"}
-                </button>
+                  {j.status !== "saved" && j.status !== "applied" && (
+                    <button onClick={() => handleStatusChange(j.id, "saved")}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">Save</button>
+                  )}
+                  {j.status !== "dismissed" && (
+                    <button onClick={() => handleStatusChange(j.id, "dismissed")}
+                      className="px-2 py-1 rounded-lg text-[10px] font-medium bg-white/5 text-zinc-500 hover:bg-white/10 transition">✕</button>
+                  )}
+                </div>
               </div>
+            </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Companies Watchlist */}
+      <Card title="Companies to Watch" icon="🏢">
+        <div className="space-y-1.5 max-h-40 overflow-auto">
+          {companies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
+          {companies.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
+              <span className="text-xs text-white flex-1">{c.name}</span>
+              {c.website_url && <a href={c.website_url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-zinc-400 hover:text-white">🌐</a>}
+              <a href={c.linkedin_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.name)}`}
+                target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">LinkedIn</a>
             </div>
           ))}
         </div>
@@ -494,112 +752,237 @@ function JobsWidgets({ jobs, refresh }: { jobs: JobPosting[]; refresh: () => voi
 /* ═══════════════════════════════════════════════════════
    SKILLS — Udemy + Coursera style
    ═══════════════════════════════════════════════════════ */
-function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => void }) {
+function SkillsWidgets({ skills: localSkills, refresh }: { skills: Skill[]; refresh: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const avgProgress = skills.length ? Math.round(skills.reduce((s, sk) => s + sk.progress, 0) / skills.length) : 0;
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<string | null>(null);
 
-  // "Continue where you left off" — find last skill with partial progress
-  const continueSkill = skills.find((s) => s.progress > 0 && s.progress < 100) || skills[0];
-  const nextLesson = continueSkill?.lessons.find((l) => !l.completed);
+  // API-backed data
+  interface RoadmapItem {
+    id: string; skill_id: string; skill_name: string; category?: string; level: string;
+    skill_description?: string; status: string; order_index: number;
+    total_lessons: number; completed_lessons: number;
+  }
+  interface RadarItem { id: string; title: string; url: string; summary?: string; tags_json?: string; fetched_at: string }
+  interface Suggestion { id: string; proposed_skill_name: string; reason_md: string; status: string }
+  interface LessonItem {
+    id: string; module_title: string; lesson_title: string; order_index: number;
+    content_md: string; progress_status: string;
+  }
 
-  const gradientMap: Record<string, string> = {
-    Certification: "from-violet-500 to-purple-500",
-    Tool: "from-cyan-500 to-blue-500",
-    Skill: "from-rose-500 to-red-500",
-    Programming: "from-amber-500 to-orange-500",
-    Cloud: "from-emerald-500 to-green-500",
+  const [roadmap, setRoadmap] = useState<RoadmapItem[]>([]);
+  const [radarItems, setRadarItems] = useState<RadarItem[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [lessons, setLessons] = useState<LessonItem[]>([]);
+  const [hasApi, setHasApi] = useState(false);
+
+  const loadRoadmap = useCallback(async () => {
+    try {
+      const d = await apiGet<{ roadmap: RoadmapItem[] }>("/skills/roadmap");
+      if (d.roadmap) { setRoadmap(d.roadmap); setHasApi(true); }
+    } catch { setHasApi(false); }
+  }, []);
+
+  const loadRadar = useCallback(async () => {
+    try { const d = await apiGet<{ items: RadarItem[] }>("/skills/radar?limit=10"); setRadarItems(d.items || []); } catch { /* */ }
+  }, []);
+
+  const loadSuggestions = useCallback(async () => {
+    try { const d = await apiGet<{ suggestions: Suggestion[] }>("/skills/suggestions?status=new"); setSuggestions(d.suggestions || []); } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadRoadmap(); loadRadar(); loadSuggestions(); }, [loadRoadmap, loadRadar, loadSuggestions]);
+
+  // Load lessons when a skill is expanded
+  useEffect(() => {
+    if (!expanded || !hasApi) return;
+    const item = roadmap.find((r) => r.skill_id === expanded);
+    if (!item) return;
+    apiGet<{ lessons: LessonItem[] }>(`/skills/${expanded}/lessons`).then((d) => setLessons(d.lessons || [])).catch(() => {});
+  }, [expanded, hasApi, roadmap]);
+
+  async function handleScan() {
+    setScanning(true); setScanResult(null);
+    try {
+      const d = await apiPost<{ ok: boolean; newItems?: number; suggestions?: number; error?: string }>("/skills/radar/scan", {});
+      setScanResult(d.ok ? `${d.newItems || 0} new items, ${d.suggestions || 0} suggestions` : (d.error || "Failed"));
+      loadRadar(); loadSuggestions();
+    } catch (e) { setScanResult(e instanceof Error ? e.message : "Failed"); }
+    finally { setScanning(false); }
+  }
+
+  async function handleLessonProgress(lessonId: string, status: string) {
+    try { await apiPost(`/lessons/${lessonId}/progress`, { status }); loadRoadmap(); } catch { /* fallback */ }
+  }
+
+  async function handleRoadmapStatus(roadmapId: string, status: string) {
+    try { await apiPatch(`/skills/roadmap/${roadmapId}`, { status }); loadRoadmap(); } catch { /* */ }
+  }
+
+  async function handleSuggestionAction(id: string, status: string) {
+    try { await apiPatch("/skills/suggestions", { id, status }); loadSuggestions(); } catch { /* */ }
+  }
+
+  // Merge: prefer API roadmap; fallback to local
+  const displaySkills = hasApi ? roadmap : localSkills.map((s, i) => ({
+    id: `local-${s.id}`, skill_id: s.id, skill_name: s.name, category: s.category, level: "beginner",
+    skill_description: "", status: s.progress === 100 ? "completed" : s.progress > 0 ? "in_progress" : "planned",
+    order_index: i, total_lessons: s.lessons.length,
+    completed_lessons: s.lessons.filter((l) => l.completed).length,
+  }));
+
+  const totalLessons = displaySkills.reduce((s, sk) => s + sk.total_lessons, 0);
+  const completedLessons = displaySkills.reduce((s, sk) => s + sk.completed_lessons, 0);
+  const avgProgress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+
+  const catGradient: Record<string, string> = {
+    cloud: "from-emerald-500 to-green-500", security: "from-violet-500 to-purple-500",
+    dev: "from-amber-500 to-orange-500", ai: "from-cyan-500 to-blue-500",
+  };
+  const catBadge: Record<string, string> = { cloud: "emerald", security: "violet", dev: "amber", ai: "cyan" };
+  const statusColor: Record<string, string> = {
+    planned: "zinc", in_progress: "amber", completed: "emerald", paused: "rose",
   };
 
-  const badgeColorMap: Record<string, string> = {
-    Certification: "violet",
-    Tool: "cyan",
-    Skill: "rose",
-    Programming: "amber",
-    Cloud: "emerald",
-  };
+  // Continue where you left off
+  const continueItem = displaySkills.find((s) => s.status === "in_progress") || displaySkills.find((s) => s.status === "planned");
 
   return (
     <div className="space-y-3">
       {/* Overall progress */}
-      <div className="glass-light rounded-2xl p-4 animate-fade-in">
+      <div id="skills-continue" className="glass-light rounded-2xl p-4 animate-fade-in">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-semibold text-zinc-100">Overall Progress</span>
           <span className="text-xs text-zinc-400">{avgProgress}%</span>
         </div>
         <ProgressBar value={avgProgress} gradient="from-amber-500 to-orange-500" />
         <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-          <div><div className="text-sm font-bold text-white">{skills.length}</div><div className="text-[10px] text-zinc-400">Skills</div></div>
-          <div><div className="text-sm font-bold text-white">{skills.reduce((s, sk) => s + sk.lessons.length, 0)}</div><div className="text-[10px] text-zinc-400">Lessons</div></div>
-          <div><div className="text-sm font-bold text-white">{skills.reduce((s, sk) => s + sk.lessons.filter((l) => l.completed).length, 0)}</div><div className="text-[10px] text-zinc-400">Completed</div></div>
+          <div><div className="text-sm font-bold text-white">{displaySkills.length}</div><div className="text-[10px] text-zinc-400">Skills</div></div>
+          <div><div className="text-sm font-bold text-white">{totalLessons}</div><div className="text-[10px] text-zinc-400">Lessons</div></div>
+          <div><div className="text-sm font-bold text-white">{completedLessons}</div><div className="text-[10px] text-zinc-400">Completed</div></div>
         </div>
       </div>
 
       {/* Continue where you left off */}
-      {nextLesson && continueSkill && (
-        <div className="glass-light rounded-2xl p-4 animate-fade-in border border-amber-500/20 glow-amber">
+      {continueItem && (
+        <div className="glass-light rounded-2xl p-4 animate-fade-in border border-amber-500/20">
           <div className="text-[10px] text-amber-400 font-semibold mb-1">▶ CONTINUE WHERE YOU LEFT OFF</div>
-          <div className="text-sm font-semibold text-white">{continueSkill.name}</div>
-          <div className="text-xs text-zinc-400 mt-0.5">Next: {nextLesson.title}</div>
-          <div className="text-[10px] text-zinc-500 mt-1">{nextLesson.description}</div>
-          <button onClick={() => setExpanded(continueSkill.id)} className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
+          <div className="text-sm font-semibold text-white">{continueItem.skill_name}</div>
+          <div className="text-xs text-zinc-400 mt-0.5">{continueItem.completed_lessons}/{continueItem.total_lessons} lessons</div>
+          <button onClick={() => { setExpanded(continueItem.skill_id); if (continueItem.status === "planned" && hasApi) handleRoadmapStatus(continueItem.id, "in_progress"); }}
+            className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
             Continue →
           </button>
         </div>
       )}
 
-      {/* Skill cards with expandable lessons */}
-      {skills.map((skill) => (
+      {/* Roadmap / Skill cards */}
+      {displaySkills.map((skill) => (
         <div key={skill.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
-          <button
-            onClick={() => setExpanded(expanded === skill.id ? null : skill.id)}
-            className="w-full text-left p-4 hover:bg-white/5 transition"
-          >
+          <button onClick={() => setExpanded(expanded === skill.skill_id ? null : skill.skill_id)}
+            className="w-full text-left p-4 hover:bg-white/5 transition">
             <div className="flex items-center gap-3">
-              <div className={cx("w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center text-sm font-bold text-white shrink-0", gradientMap[skill.category] || "from-zinc-500 to-zinc-600")}>
-                {skill.progress}%
+              <div className={cx("w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center text-sm font-bold text-white shrink-0",
+                catGradient[skill.category || ""] || "from-zinc-500 to-zinc-600")}>
+                {skill.total_lessons > 0 ? Math.round((skill.completed_lessons / skill.total_lessons) * 100) : 0}%
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-white truncate">{skill.name}</span>
-                  <Badge color={badgeColorMap[skill.category] || "zinc"}>{skill.category}</Badge>
+                  <span className="text-xs font-semibold text-white truncate">{skill.skill_name}</span>
+                  <Badge color={catBadge[skill.category || ""] || "zinc"}>{skill.category || "general"}</Badge>
+                  <Badge color={statusColor[skill.status] || "zinc"}>{skill.status}</Badge>
                 </div>
                 <div className="mt-1.5">
-                  <ProgressBar value={skill.progress} gradient={gradientMap[skill.category] || "from-zinc-500 to-zinc-400"} />
+                  <ProgressBar value={skill.total_lessons > 0 ? (skill.completed_lessons / skill.total_lessons) * 100 : 0}
+                    gradient={catGradient[skill.category || ""] || "from-zinc-500 to-zinc-400"} />
                 </div>
-                <div className="text-[10px] text-zinc-500 mt-1">
-                  {skill.lessons.filter((l) => l.completed).length}/{skill.lessons.length} lessons
-                </div>
+                <div className="text-[10px] text-zinc-500 mt-1">{skill.completed_lessons}/{skill.total_lessons} lessons · {skill.level}</div>
               </div>
-              <span className={cx("text-zinc-500 transition-transform", expanded === skill.id && "rotate-90")}>›</span>
+              <span className={cx("text-zinc-500 transition-transform", expanded === skill.skill_id && "rotate-90")}>›</span>
             </div>
           </button>
 
-          {/* Expanded lesson list */}
-          {expanded === skill.id && (
+          {expanded === skill.skill_id && (
             <div className="px-4 pb-4 space-y-1.5 animate-fade-in border-t border-white/5 pt-3">
-              {skill.lessons.map((lesson, li) => (
+              {hasApi && lessons.length > 0 ? lessons.map((lesson, li) => (
                 <div key={lesson.id} className="flex items-start gap-2.5 rounded-xl bg-white/5 p-3 hover:bg-white/10 transition">
-                  <button
-                    onClick={() => { toggleLesson(skill.id, lesson.id); refresh(); }}
-                    className={cx(
-                      "w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
-                      lesson.completed ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
-                    )}
-                  >
-                    {lesson.completed && "✓"}
+                  <button onClick={() => handleLessonProgress(lesson.id, lesson.progress_status === "completed" ? "not_started" : "completed")}
+                    className={cx("w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
+                      lesson.progress_status === "completed" ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
+                    )}>
+                    {lesson.progress_status === "completed" && "✓"}
                   </button>
                   <div className="min-w-0 flex-1">
-                    <div className={cx("text-xs font-medium", lesson.completed ? "text-zinc-500 line-through" : "text-white")}>
-                      <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.title}
+                    <div className={cx("text-xs font-medium", lesson.progress_status === "completed" ? "text-zinc-500 line-through" : "text-white")}>
+                      <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.lesson_title}
                     </div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.description}</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.module_title}</div>
                   </div>
                 </div>
-              ))}
+              )) : !hasApi && localSkills.find((s) => s.id === skill.skill_id) ? (
+                localSkills.find((s) => s.id === skill.skill_id)!.lessons.map((lesson, li) => (
+                  <div key={lesson.id} className="flex items-start gap-2.5 rounded-xl bg-white/5 p-3 hover:bg-white/10 transition">
+                    <button onClick={() => { toggleLesson(skill.skill_id, lesson.id); refresh(); }}
+                      className={cx("w-5 h-5 rounded-md border shrink-0 flex items-center justify-center text-[10px] transition mt-0.5",
+                        lesson.completed ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" : "border-white/20 hover:border-amber-400"
+                      )}>
+                      {lesson.completed && "✓"}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className={cx("text-xs font-medium", lesson.completed ? "text-zinc-500 line-through" : "text-white")}>
+                        <span className="text-zinc-500 mr-1.5">{li + 1}.</span>{lesson.title}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5">{lesson.description}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-[10px] text-zinc-500 py-2">No lessons yet. Add lessons via the API or chat with your career agent.</div>
+              )}
             </div>
           )}
         </div>
       ))}
+
+      {/* Industry Radar */}
+      <Card title="Industry Radar" icon="📡" actions={
+        <button onClick={handleScan} disabled={scanning}
+          className="text-[10px] px-2 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 disabled:opacity-50 transition">
+          {scanning ? "Scanning…" : "🔍 Scan"}
+        </button>
+      }>
+        {scanResult && <div className="text-[10px] text-zinc-400 mb-2">{scanResult}</div>}
+        <div className="space-y-1.5 max-h-40 overflow-auto">
+          {radarItems.length === 0 && <div className="text-[10px] text-zinc-500">Click Scan to discover new skills and trends.</div>}
+          {radarItems.slice(0, 8).map((item) => (
+            <a key={item.id} href={item.url} target="_blank" rel="noopener noreferrer"
+              className="block rounded-lg bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+              <div className="text-[10px] text-white hover:underline">{item.title} ↗</div>
+              {item.summary && <div className="text-[9px] text-zinc-500 mt-0.5 line-clamp-1">{item.summary}</div>}
+            </a>
+          ))}
+        </div>
+      </Card>
+
+      {/* Suggestions */}
+      {suggestions.length > 0 && (
+        <Card title="Suggested Skills" icon="💡">
+          <div className="space-y-2">
+            {suggestions.map((s) => (
+              <div key={s.id} className="rounded-xl bg-white/5 p-3">
+                <div className="text-xs font-semibold text-white">{s.proposed_skill_name}</div>
+                <div className="text-[10px] text-zinc-400 mt-0.5">{s.reason_md}</div>
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => handleSuggestionAction(s.id, "saved")}
+                    className="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 text-[10px] hover:bg-emerald-500/30 transition">Save</button>
+                  <button onClick={() => handleSuggestionAction(s.id, "dismissed")}
+                    className="px-2 py-1 rounded-lg bg-white/5 text-zinc-400 text-[10px] hover:bg-white/10 transition">Dismiss</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -608,89 +991,205 @@ function SkillsWidgets({ skills, refresh }: { skills: Skill[]; refresh: () => vo
    SPORTS — ESPN style
    ═══════════════════════════════════════════════════════ */
 function SportsWidgets(_: { refresh: () => void }) {
-  const [league, setLeague] = useState("NBA");
-  const leagues = ["NBA", "NFL", "MLB", "NHL", "Soccer"];
-
-  // Demo scores (agent would fill these in)
-  const demoScores = [
-    { home: "Lakers", away: "Celtics", homeScore: 112, awayScore: 108, status: "Final", league: "NBA" },
-    { home: "Warriors", away: "Nets", homeScore: 98, awayScore: 102, status: "Final", league: "NBA" },
-    { home: "Heat", away: "Bucks", homeScore: 0, awayScore: 0, status: "7:30 PM", league: "NBA" },
-    { home: "Chiefs", away: "Eagles", homeScore: 24, awayScore: 21, status: "Final", league: "NFL" },
-    { home: "Yankees", away: "Red Sox", homeScore: 5, awayScore: 3, status: "Final", league: "MLB" },
+  const [league, setLeague] = useState("nba");
+  const leagues = [
+    { key: "nba", label: "NBA" }, { key: "nfl", label: "NFL" },
+    { key: "mlb", label: "MLB" }, { key: "nhl", label: "NHL" },
   ];
-  const scores = demoScores.filter((s) => s.league === league);
+  const [filter, setFilter] = useState("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  interface Game {
+    id: string; home_team_name: string; away_team_name: string;
+    home_score?: number; away_score?: number; status: string;
+    start_time: string; period?: string; clock?: string;
+  }
+  interface WlTeam { league: string; team_id: string; team_name: string }
+  interface Prediction {
+    id: string; game_id: string; home_team_name?: string; away_team_name?: string;
+    proj_spread_home?: number; proj_total?: number; win_prob_home?: number;
+    edge_spread?: number; edge_total?: number; explanation_md?: string;
+  }
+
+  const [games, setGames] = useState<Game[]>([]);
+  const [watchlist, setWatchlist] = useState<WlTeam[]>([]);
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [addTeam, setAddTeam] = useState("");
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
+
+  const loadGames = useCallback(async () => {
+    try {
+      const d = await apiGet<{ games: Game[] }>(`/sports/games?league=${league}&filter=${filter}`);
+      setGames(d.games || []);
+    } catch { /* */ }
+  }, [league, filter]);
+
+  const loadWatchlist = useCallback(async () => {
+    try {
+      const d = await apiGet<{ teams: WlTeam[] }>(`/sports/watchlist?league=${league}`);
+      setWatchlist(d.teams || []);
+    } catch { /* */ }
+  }, [league]);
+
+  const loadPredictions = useCallback(async () => {
+    try {
+      const d = await apiGet<{ predictions: Prediction[] }>(`/sports/predictions?league=${league}`);
+      setPredictions(d.predictions || []);
+    } catch { /* */ }
+  }, [league]);
+
+  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); }, [loadGames, loadWatchlist, loadPredictions]);
+
+  async function handleRefresh() {
+    setRefreshing(true); setStatusMsg(null);
+    try {
+      const d = await apiPost<{ ok: boolean; games?: number; error?: string; source?: string }>("/sports/refresh", { league });
+      setStatusMsg(d.ok ? `Refreshed (${d.source || "done"})` : (d.error || "Failed"));
+      loadGames();
+    } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleAddTeam() {
+    if (!addTeam.trim()) return;
+    const teamId = addTeam.trim().toLowerCase().replace(/\s+/g, "-");
+    try {
+      await apiPost("/sports/watchlist", { league, teamId, teamName: addTeam.trim() });
+      setAddTeam("");
+      loadWatchlist();
+    } catch { /* */ }
+  }
+
+  const activeGame = games.find((g) => g.id === activeGameId);
+  const activePred = predictions.find((p) => p.game_id === activeGameId);
 
   return (
     <div className="space-y-3">
       {/* League tabs */}
       <div className="flex gap-1 overflow-auto pb-1">
         {leagues.map((l) => (
-          <button key={l} onClick={() => setLeague(l)} className={cx(
+          <button key={l.key} onClick={() => setLeague(l.key)} className={cx(
             "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap",
-            league === l ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{l}</button>
+            league === l.key ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{l.label}</button>
         ))}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh"}
+        </button>
+        {(["all", "watchlist", "live", "final"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-2 py-1 rounded-lg text-[10px] font-medium border transition capitalize",
+            filter === f ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f}</button>
+        ))}
+        {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
       <AgentStatus verb="fetching live scores" />
 
       {/* Scores */}
       <Card title="Scores" icon="🏆">
-        {scores.length === 0 ? <EmptyState icon="🏟️" text={`No ${league} scores. Ask agent to fetch.`} /> : (
-          <div className="space-y-2">
-            {scores.map((s, i) => (
-              <div key={i} className="rounded-xl bg-white/5 p-3">
+        {games.length === 0 ? (
+          <EmptyState icon="🏟️" text={`No ${league.toUpperCase()} games. Click Refresh or connect a sports data provider.`} />
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-auto">
+            {games.map((g) => (
+              <button key={g.id} onClick={() => setActiveGameId(g.id)}
+                className={cx("w-full text-left rounded-xl p-3 transition",
+                  activeGameId === g.id ? "bg-white/10 ring-1 ring-rose-500/30" : "bg-white/5 hover:bg-white/10"
+                )}>
                 <div className="flex items-center justify-between">
                   <div className="text-xs">
-                    <div className={cx("font-semibold", s.homeScore > s.awayScore ? "text-white" : "text-zinc-400")}>{s.home} <span className="font-bold">{s.homeScore}</span></div>
-                    <div className={cx("font-semibold mt-0.5", s.awayScore > s.homeScore ? "text-white" : "text-zinc-400")}>{s.away} <span className="font-bold">{s.awayScore}</span></div>
+                    <div className={cx("font-semibold", (g.home_score || 0) > (g.away_score || 0) ? "text-white" : "text-zinc-400")}>
+                      {g.home_team_name} <span className="font-bold">{g.home_score ?? "-"}</span>
+                    </div>
+                    <div className={cx("font-semibold mt-0.5", (g.away_score || 0) > (g.home_score || 0) ? "text-white" : "text-zinc-400")}>
+                      {g.away_team_name} <span className="font-bold">{g.away_score ?? "-"}</span>
+                    </div>
                   </div>
-                  <Badge color={s.status === "Final" ? "zinc" : "emerald"}>{s.status}</Badge>
+                  <div className="text-right">
+                    <Badge color={g.status === "final" ? "zinc" : g.status === "live" ? "emerald" : "amber"}>{g.status}</Badge>
+                    {g.period && <div className="text-[9px] text-zinc-500 mt-0.5">{g.period} {g.clock || ""}</div>}
+                  </div>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}
       </Card>
 
-      {/* Projections */}
+      {/* Projections & Odds — shows for active game */}
       <Card title="Projections & Odds" icon="📊">
-        <div className="space-y-2">
-          {[
-            { matchup: "Heat vs Bucks", spread: "MIL -4.5", over: "O 218.5" },
-            { matchup: "Suns vs Mavs", spread: "DAL -2", over: "O 224" },
-          ].map((p, i) => (
-            <div key={i} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-              <span className="text-xs text-white">{p.matchup}</span>
-              <div className="flex gap-2">
-                <Badge color="rose">{p.spread}</Badge>
-                <Badge color="amber">{p.over}</Badge>
-              </div>
+        {activeGame && activePred ? (
+          <div className="space-y-2">
+            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              {activePred.proj_spread_home != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Model Spread</div>
+                  <div className="text-white font-semibold">{activePred.proj_spread_home > 0 ? "+" : ""}{activePred.proj_spread_home}</div>
+                </div>
+              )}
+              {activePred.proj_total != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Model Total</div>
+                  <div className="text-white font-semibold">{activePred.proj_total}</div>
+                </div>
+              )}
+              {activePred.win_prob_home != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Win Prob (Home)</div>
+                  <div className="text-white font-semibold">{(activePred.win_prob_home * 100).toFixed(1)}%</div>
+                </div>
+              )}
+              {activePred.edge_spread != null && (
+                <div className="rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400">Edge (Spread)</div>
+                  <div className={cx("font-semibold", activePred.edge_spread > 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {activePred.edge_spread > 0 ? "+" : ""}{activePred.edge_spread.toFixed(1)}
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-        <div className="mt-2 text-[10px] text-zinc-500">Ask your sports agent for detailed analysis and updated lines.</div>
+            {activePred.explanation_md && <div className="text-[10px] text-zinc-400 mt-1">{activePred.explanation_md}</div>}
+          </div>
+        ) : activeGame ? (
+          <div className="space-y-2">
+            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+            <div className="text-[10px] text-zinc-400">Model projections not generated yet.</div>
+            <button onClick={() => apiPost("/sports/predictions", { league }).catch(() => {})}
+              className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 transition">
+              Generate Projections →
+            </button>
+          </div>
+        ) : (
+          <div className="text-[10px] text-zinc-400">Select a game above to view projections and odds.</div>
+        )}
       </Card>
 
       {/* Watchlist */}
-      <Card title="My Watchlist" icon="⭐">
+      <Card title="My Watchlist" icon="⭐" actions={
+        <div className="flex items-center gap-1">
+          <input className="w-24 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[10px] text-white placeholder-zinc-500 outline-none"
+            placeholder="Team name" value={addTeam} onChange={(e) => setAddTeam(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAddTeam(); }} />
+          <button onClick={handleAddTeam} className="text-[10px] px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">+</button>
+        </div>
+      }>
         <div className="space-y-1.5">
-          {["Lakers", "Chiefs", "Yankees", "Barcelona"].map((team) => (
-            <div key={team} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
-              <span className="text-xs text-white">{team}</span>
-              <span className="text-[10px] text-zinc-500">Tracking</span>
+          {watchlist.length === 0 && <div className="text-[10px] text-zinc-500">Add teams to your watchlist above.</div>}
+          {watchlist.map((team) => (
+            <div key={team.team_id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+              <span className="text-xs text-white">{team.team_name}</span>
+              <span className="text-[10px] text-zinc-500">⭐ Tracking</span>
             </div>
           ))}
         </div>
-      </Card>
-
-      {/* Stats */}
-      <Card title="Player Stats" icon="📈">
-        <div className="text-[10px] text-zinc-400">Ask your sports agent to pull detailed player statistics, season averages, and rankings.</div>
-        <button className="mt-2 px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 transition">
-          Ask Agent →
-        </button>
       </Card>
     </div>
   );
@@ -700,56 +1199,133 @@ function SportsWidgets(_: { refresh: () => void }) {
    STOCKS — Yahoo Finance style
    ═══════════════════════════════════════════════════════ */
 function StocksWidgets(_: { refresh: () => void }) {
-  const watchlist = getWatchlist("stock");
+  // API-backed state
+  interface WlItem { ticker: string; display_name?: string }
+  interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; asof?: string; source?: string }
+  interface IndexItem { symbol: string; value: number; change_pct?: number; asof?: string; source?: string }
+  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string }
+  interface InsightItem { id: string; title: string; bullets_json: string; sentiment?: string; ticker?: string; created_at: string }
 
-  // Simulated data (agent would provide real data)
-  const simPrices: Record<string, { price: number; change: number }> = {
-    AAPL: { price: 189.43, change: 1.24 },
-    MSFT: { price: 417.88, change: -0.52 },
-    CRWD: { price: 342.15, change: 3.87 },
-    PANW: { price: 298.62, change: 2.11 },
-    NET: { price: 98.77, change: -1.03 },
+  const [watchlist, setWatchlist] = useState<WlItem[]>([]);
+  const [quotes, setQuotes] = useState<QuoteItem[]>([]);
+  const [indices, setIndices] = useState<IndexItem[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [insights, setInsights] = useState<InsightItem[]>([]);
+  const [addTicker, setAddTicker] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  const loadAll = useCallback(async () => {
+    try { const d = await apiGet<{ tickers: WlItem[] }>("/stocks/watchlist"); setWatchlist(d.tickers || []); } catch { /* */ }
+    try { const d = await apiGet<{ quotes: QuoteItem[] }>("/stocks/quotes"); setQuotes(d.quotes || []); } catch { /* */ }
+    try { const d = await apiGet<{ indices: IndexItem[] }>("/stocks/indices"); setIndices(d.indices || []); } catch { /* */ }
+    try { const d = await apiGet<{ items: NewsItem[] }>("/stocks/news?limit=20"); setNews(d.items || []); } catch { /* */ }
+    try { const d = await apiGet<{ insights: InsightItem[] }>("/stocks/insights?ticker=ALL&limit=5"); setInsights(d.insights || []); } catch { /* */ }
+  }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  async function handleAddTicker() {
+    if (!addTicker.trim()) return;
+    try { await apiPost("/stocks/watchlist", { ticker: addTicker.trim() }); setAddTicker(""); loadAll(); }
+    catch { /* */ }
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true); setStatusMsg(null);
+    try {
+      const d = await apiPost<{ ok: boolean; tickers?: number; source?: string; error?: string }>("/stocks/refresh", {});
+      setStatusMsg(d.ok ? `Refreshed ${d.tickers || 0} tickers (${d.source || "done"})` : (d.error || "Failed"));
+      loadAll();
+    } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setRefreshing(false); }
+  }
+
+  async function handleNewsScan() {
+    setScanning(true);
+    try {
+      const d = await apiPost<{ ok: boolean; newItems?: number }>("/stocks/news", {});
+      setStatusMsg(`News: ${d.newItems || 0} new items`);
+      loadAll();
+    } catch { /* */ }
+    finally { setScanning(false); }
+  }
+
+  const quoteMap = Object.fromEntries(quotes.map((q) => [q.ticker, q]));
+
+  const idxDisplay = (sym: string, label: string) => {
+    const idx = indices.find((i) => i.symbol === sym);
+    if (!idx || idx.source === "pending") return (
+      <div className="glass-light rounded-xl p-3 text-center">
+        <div className="text-[10px] text-zinc-400">{label}</div>
+        <div className="text-[10px] text-zinc-600">Not configured</div>
+      </div>
+    );
+    const isUp = (idx.change_pct || 0) >= 0;
+    return (
+      <div className="glass-light rounded-xl p-3 text-center">
+        <div className="text-[10px] text-zinc-400">{label}</div>
+        <div className={cx("text-sm font-bold", isUp ? "text-emerald-400" : "text-rose-400")}>
+          {isUp ? "+" : ""}{(idx.change_pct || 0).toFixed(2)}%
+        </div>
+      </div>
+    );
   };
 
   return (
     <div className="space-y-3">
       {/* Market overview */}
       <div className="grid grid-cols-3 gap-2">
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">S&P 500</div>
-          <div className="text-sm font-bold text-emerald-400">+0.42%</div>
-        </div>
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">NASDAQ</div>
-          <div className="text-sm font-bold text-emerald-400">+0.78%</div>
-        </div>
-        <div className="glass-light rounded-xl p-3 text-center">
-          <div className="text-[10px] text-zinc-400">BTC</div>
-          <div className="text-sm font-bold text-rose-400">-1.23%</div>
-        </div>
+        {idxDisplay("SPX", "S&P 500")}
+        {idxDisplay("IXIC", "NASDAQ")}
+        {idxDisplay("BTC", "BTC")}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={handleRefresh} disabled={refreshing}
+          className="px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 disabled:opacity-50 transition">
+          {refreshing ? "Refreshing…" : "🔄 Refresh"}
+        </button>
+        <button onClick={handleNewsScan} disabled={scanning}
+          className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition">
+          {scanning ? "Scanning…" : "📰 Scan News"}
+        </button>
+        {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
       <AgentStatus verb="monitoring market movements" />
 
       {/* Watchlist */}
-      <Card title="Watchlist" icon="📊">
+      <Card title="Watchlist" icon="📊" actions={
+        <div className="flex items-center gap-1">
+          <input className="w-20 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[10px] text-white placeholder-zinc-500 outline-none uppercase"
+            placeholder="TICKER" value={addTicker} onChange={(e) => setAddTicker(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAddTicker(); }} />
+          <button onClick={handleAddTicker} className="text-[10px] px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">+</button>
+        </div>
+      }>
         <div className="space-y-1.5">
+          {watchlist.length === 0 && <div className="text-[10px] text-zinc-500">Add tickers to your watchlist above.</div>}
           {watchlist.map((w) => {
-            const data = simPrices[w.symbol];
-            const isUp = data && data.change > 0;
+            const q = quoteMap[w.ticker];
+            const hasData = q && q.source !== "pending";
+            const isUp = hasData && (q.change_pct || 0) >= 0;
             return (
-              <div key={w.id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition">
+              <div key={w.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition">
                 <div>
-                  <div className="text-xs font-semibold text-white">{w.symbol}</div>
-                  <div className="text-[10px] text-zinc-500">{w.name}</div>
+                  <div className="text-xs font-semibold text-white">{w.ticker}</div>
+                  <div className="text-[10px] text-zinc-500">{w.display_name || ""}</div>
                 </div>
-                {data && (
+                {hasData ? (
                   <div className="text-right">
-                    <div className="text-xs font-semibold text-white">${data.price.toFixed(2)}</div>
+                    <div className="text-xs font-semibold text-white">${q.price.toFixed(2)}</div>
                     <div className={cx("text-[10px] font-medium", isUp ? "text-emerald-400" : "text-rose-400")}>
-                      {isUp ? "▲" : "▼"} {Math.abs(data.change).toFixed(2)}%
+                      {isUp ? "▲" : "▼"} {Math.abs(q.change_pct || 0).toFixed(2)}%
                     </div>
                   </div>
+                ) : (
+                  <div className="text-[10px] text-zinc-600">Pending</div>
                 )}
               </div>
             );
@@ -759,31 +1335,47 @@ function StocksWidgets(_: { refresh: () => void }) {
 
       {/* Market News */}
       <Card title="Market News" icon="📰">
-        <div className="space-y-2">
-          {[
-            { title: "CrowdStrike Reports Record Q4 Earnings", time: "2h ago", sentiment: "bullish" },
-            { title: "Fed Signals Steady Rates Through Q2", time: "4h ago", sentiment: "neutral" },
-            { title: "Cloudflare Expands AI Infrastructure", time: "6h ago", sentiment: "bullish" },
-            { title: "Tech Sector Leads S&P 500 Rally", time: "8h ago", sentiment: "bullish" },
-          ].map((n, i) => (
-            <div key={i} className="rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition cursor-pointer">
+        <div className="space-y-2 max-h-64 overflow-auto">
+          {news.length === 0 && <div className="text-[10px] text-zinc-500">Click Scan News to fetch market headlines.</div>}
+          {news.map((n) => (
+            <a key={n.id} href={n.url} target="_blank" rel="noopener noreferrer"
+              className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
               <div className="flex items-start justify-between gap-2">
-                <div className="text-xs text-white">{n.title}</div>
-                <Badge color={n.sentiment === "bullish" ? "emerald" : n.sentiment === "bearish" ? "rose" : "zinc"}>
-                  {n.sentiment}
-                </Badge>
+                <div className="text-xs text-white hover:underline">{n.title} ↗</div>
+                {n.sentiment && (
+                  <Badge color={n.sentiment === "bullish" ? "emerald" : n.sentiment === "bearish" ? "rose" : "zinc"}>
+                    {n.sentiment}
+                  </Badge>
+                )}
               </div>
-              <div className="text-[10px] text-zinc-500 mt-0.5">{n.time}</div>
-            </div>
+              <div className="text-[10px] text-zinc-500 mt-0.5">{n.source} · {n.published_at ? new Date(n.published_at).toLocaleDateString() : ""}</div>
+            </a>
           ))}
         </div>
       </Card>
 
-      {/* Analysis */}
+      {/* AI Insights */}
       <Card title="AI Analysis" icon="🤖">
-        <div className="text-[10px] text-zinc-400">Ask your stocks agent for real-time analysis, technical indicators, and portfolio recommendations.</div>
-        <button className="mt-2 px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 transition">
-          Analyze Portfolio →
+        {insights.length === 0 ? (
+          <div className="text-[10px] text-zinc-400">No insights yet. Generate a briefing or ask your stocks agent.</div>
+        ) : (
+          <div className="space-y-2">
+            {insights.map((ins) => {
+              let bullets: string[] = [];
+              try { bullets = JSON.parse(ins.bullets_json); } catch { /* */ }
+              return (
+                <div key={ins.id} className="rounded-xl bg-white/5 p-3">
+                  <div className="text-xs font-semibold text-white">{ins.title}</div>
+                  {bullets.map((b, i) => <div key={i} className="text-[10px] text-zinc-400 mt-0.5">• {b}</div>)}
+                  <div className="text-[9px] text-zinc-600 mt-1">{new Date(ins.created_at).toLocaleString()}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <button onClick={() => apiPost("/stocks/insights/generate", {}).catch(() => {})}
+          className="mt-2 px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 transition">
+          Generate Briefing →
         </button>
       </Card>
     </div>
@@ -793,54 +1385,144 @@ function StocksWidgets(_: { refresh: () => void }) {
 /* ═══════════════════════════════════════════════════════
    RESEARCH — News + Deep Dive courses
    ═══════════════════════════════════════════════════════ */
-function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; refresh: () => void }) {
-  const [filter, setFilter] = useState<"all" | "world" | "tech" | "cyber" | "deep">("all");
+function ResearchWidgets({ research: localResearch, refresh }: { research: ResearchArticle[]; refresh: () => void }) {
+  const [filter, setFilter] = useState<"all" | "unread" | "saved">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [noteText, setNoteText] = useState<Record<string, string>>({});
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<string | null>(null);
 
-  const categories = [
-    { key: "all" as const, label: "All", icon: "📋" },
-    { key: "world" as const, label: "World", icon: "🌍" },
-    { key: "tech" as const, label: "Tech", icon: "💻" },
-    { key: "cyber" as const, label: "Cyber", icon: "🔒" },
-    { key: "deep" as const, label: "Deep Dive", icon: "🔬" },
-  ];
+  // API-backed items
+  interface ApiItem {
+    id: string; title: string; url: string; source_name?: string;
+    published_at?: string; fetched_at: string; summary?: string;
+    tags_json?: string; is_read: number; is_saved: number;
+  }
+  const [apiItems, setApiItems] = useState<ApiItem[]>([]);
+  const [hasApi, setHasApi] = useState(false);
 
-  const filtered = filter === "all" ? research : research.filter((r) => r.category === filter);
-  const unread = research.filter((r) => !r.read).length;
-  const readCount = research.filter((r) => r.read).length;
+  const loadFeed = useCallback(async (f: string) => {
+    try {
+      const data = await apiGet<{ items: ApiItem[] }>(`/research/feed?filter=${f}&limit=50`);
+      if (data.items && data.items.length >= 0) {
+        setApiItems(data.items);
+        setHasApi(true);
+      }
+    } catch {
+      setHasApi(false);
+    }
+  }, []);
 
-  const catColorMap: Record<string, string> = {
-    world: "indigo",
-    tech: "cyan",
-    cyber: "rose",
-    deep: "amber",
-  };
+  useEffect(() => { loadFeed(filter); }, [filter, loadFeed]);
+
+  async function handleScan() {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const data = await apiPost<{ ok: boolean; newItems?: number; sources?: number; tookMs?: number; error?: string }>("/research/scan", {});
+      if (data.ok) {
+        setScanResult(`Found ${data.newItems || 0} new items from ${data.sources || 0} sources (${data.tookMs || 0}ms)`);
+        loadFeed(filter);
+      } else {
+        setScanResult(data.error || "Scan failed");
+      }
+    } catch (e) {
+      setScanResult(e instanceof Error ? e.message : "Scan failed");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleMarkRead(itemId: string, isRead: boolean) {
+    try {
+      await apiPost(`/research/item/${itemId}/read`, { isRead });
+      loadFeed(filter);
+    } catch {
+      // fallback to local
+      toggleArticleRead(itemId);
+      refresh();
+    }
+  }
+
+  async function handleSaveItem(itemId: string, isSaved: boolean) {
+    try {
+      await apiPost(`/research/item/${itemId}/save`, { isSaved });
+      loadFeed(filter);
+    } catch {
+      // non-fatal
+    }
+  }
+
+  // Merged display: prefer API items, fall back to localStorage
+  const displayItems = hasApi ? apiItems.map((a) => ({
+    id: a.id,
+    title: a.title,
+    url: a.url,
+    source: a.source_name || "",
+    category: "tech" as const,
+    read: a.is_read === 1,
+    saved: a.is_saved === 1,
+    notes: "",
+    summary: a.summary || "",
+    tags: a.tags_json ? JSON.parse(a.tags_json) : [],
+    publishedAt: a.published_at || a.fetched_at,
+  })) : localResearch.map((r) => ({
+    id: r.id,
+    title: r.title,
+    url: r.url || "#",
+    source: r.source,
+    category: r.category,
+    read: r.read,
+    saved: false,
+    notes: r.notes,
+    summary: "",
+    tags: [] as string[],
+    publishedAt: "",
+  }));
+
+  const unread = displayItems.filter((r) => !r.read).length;
+  const readCount = displayItems.filter((r) => r.read).length;
 
   return (
     <div className="space-y-3">
-      {/* Stats */}
+      {/* Stats + Scan */}
       <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="📰" value={research.length} label="Articles" />
+        <StatBox icon="📰" value={displayItems.length} label="Articles" />
         <StatBox icon="📖" value={readCount} label="Read" />
         <StatBox icon="🆕" value={unread} label="Unread" />
       </div>
 
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleScan}
+          disabled={scanning}
+          className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition"
+        >
+          {scanning ? "Scanning…" : "🔍 Scan Now"}
+        </button>
+        {scanResult && <span className="text-[10px] text-zinc-400">{scanResult}</span>}
+      </div>
+
       <AgentStatus verb="researching latest cybersecurity news" />
 
-      {/* Category filter */}
+      {/* Filter tabs: All / Unread / Saved */}
       <div className="flex gap-1 overflow-auto pb-1">
-        {categories.map((c) => (
-          <button key={c.key} onClick={() => setFilter(c.key)} className={cx(
-            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap",
-            filter === c.key ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{c.icon} {c.label}</button>
+        {(["all", "unread", "saved"] as const).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className={cx(
+            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
+            filter === f ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>{f === "all" ? "📋 All" : f === "unread" ? "🆕 Unread" : "💾 Saved"}</button>
         ))}
       </div>
 
       {/* Articles */}
       <div className="space-y-2 max-h-[60vh] overflow-auto">
-        {filtered.map((article) => (
+        {displayItems.length === 0 && (
+          <div className="text-center py-6 text-xs text-zinc-500">
+            {hasApi ? "No articles. Click Scan Now to fetch feeds." : "No articles in local store."}
+          </div>
+        )}
+        {displayItems.map((article) => (
           <div key={article.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
             <button
               onClick={() => setExpanded(expanded === article.id ? null : article.id)}
@@ -853,62 +1535,69 @@ function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; r
                 )} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <Badge color={catColorMap[article.category] || "zinc"}>{article.category}</Badge>
+                    {article.tags.slice(0, 2).map((t: string) => (
+                      <Badge key={t} color="indigo">{t}</Badge>
+                    ))}
                     <span className="text-[10px] text-zinc-500">{article.source}</span>
+                    {article.publishedAt && (
+                      <span className="text-[10px] text-zinc-600">{new Date(article.publishedAt).toLocaleDateString()}</span>
+                    )}
                   </div>
-                  <div className={cx("text-xs font-semibold mt-1", article.read ? "text-zinc-400" : "text-white")}>
-                    {article.title}
-                  </div>
+                  <a
+                    href={article.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={cx("text-xs font-semibold mt-1 hover:underline block", article.read ? "text-zinc-400" : "text-white")}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {article.title} ↗
+                  </a>
+                  {article.summary && (
+                    <div className="text-[10px] text-zinc-500 mt-0.5 line-clamp-2">{article.summary}</div>
+                  )}
                 </div>
                 <span className={cx("text-zinc-500 transition-transform shrink-0", expanded === article.id && "rotate-90")}>›</span>
               </div>
             </button>
 
-            {/* Expanded view — course-like deep dive */}
             {expanded === article.id && (
               <div className="px-4 pb-4 space-y-3 animate-fade-in border-t border-white/5 pt-3">
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   <button
-                    onClick={() => { toggleArticleRead(article.id); refresh(); }}
+                    onClick={() => hasApi ? handleMarkRead(article.id, !article.read) : (() => { toggleArticleRead(article.id); refresh(); })()}
                     className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
                       article.read ? "bg-white/5 text-zinc-400" : "bg-indigo-500/20 text-indigo-400"
                     )}
                   >
                     {article.read ? "Mark Unread" : "✓ Mark Read"}
                   </button>
-                  {article.url !== "#" && (
-                    <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
-                      Open Source ↗
-                    </a>
-                  )}
-                </div>
-
-                {/* Notes per article */}
-                <div>
-                  <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
-                  <textarea
-                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-20"
-                    placeholder="Add your thoughts, key takeaways, questions…"
-                    value={noteText[article.id] ?? article.notes}
-                    onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
-                  />
                   <button
-                    onClick={() => {
-                      saveArticleNotes(article.id, noteText[article.id] ?? article.notes);
-                      refresh();
-                    }}
-                    className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                    onClick={() => handleSaveItem(article.id, !article.saved)}
+                    className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
+                      article.saved ? "bg-amber-500/20 text-amber-400" : "bg-white/5 text-zinc-400"
+                    )}
                   >
-                    Save Notes
+                    {article.saved ? "💾 Saved" : "Save"}
                   </button>
+                  <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
+                    Open Source ↗
+                  </a>
                 </div>
 
-                {article.category === "deep" && (
-                  <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/10">
-                    <div className="text-[10px] text-amber-400 font-semibold mb-1">🔬 DEEP DIVE — Course Module</div>
-                    <div className="text-[10px] text-zinc-400">This article is structured as a learning module. Ask your research agent to expand it into a full lesson with exercises.</div>
-                    <button className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium hover:bg-amber-500/30 transition">
-                      Generate Full Lesson →
+                {!hasApi && (
+                  <div>
+                    <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
+                    <textarea
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-20"
+                      placeholder="Add your thoughts, key takeaways, questions…"
+                      value={noteText[article.id] ?? article.notes}
+                      onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
+                    />
+                    <button
+                      onClick={() => { saveArticleNotes(article.id, noteText[article.id] ?? article.notes); refresh(); }}
+                      className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                    >
+                      Save Notes
                     </button>
                   </div>
                 )}
@@ -921,10 +1610,10 @@ function ResearchWidgets({ research, refresh }: { research: ResearchArticle[]; r
       {/* Reading Progress */}
       <Card title="Reading Progress" icon="📊">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-zinc-400">{readCount} of {research.length} articles</span>
-          <span className="text-xs font-semibold text-white">{research.length > 0 ? Math.round((readCount / research.length) * 100) : 0}%</span>
+          <span className="text-xs text-zinc-400">{readCount} of {displayItems.length} articles</span>
+          <span className="text-xs font-semibold text-white">{displayItems.length > 0 ? Math.round((readCount / displayItems.length) * 100) : 0}%</span>
         </div>
-        <ProgressBar value={research.length > 0 ? (readCount / research.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
+        <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
       </Card>
     </div>
   );
@@ -1156,6 +1845,8 @@ function SettingsWidgets() {
         </div>
       </Card>
 
+      <AutonomyPanel />
+
       <Card title="About" icon="ℹ️">
         <div className="text-xs text-zinc-400 space-y-1">
           <div><strong className="text-zinc-300">My Control Center</strong> v0.1.0</div>
@@ -1164,5 +1855,111 @@ function SettingsWidgets() {
         </div>
       </Card>
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUTONOMY PANEL — Cron job status + manual triggers
+   ═══════════════════════════════════════════════════════ */
+function AutonomyPanel() {
+  const [jobs, setJobs] = useState<{
+    jobName: string; lastRunAt: string | null; status: string | null;
+    itemsProcessed: number; tookMs: number | null; error: string | null;
+    cron: string | null; description: string | null;
+  }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
+  const [expandedError, setExpandedError] = useState<string | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiGet<{ jobs: typeof jobs }>("/admin/cron");
+      setJobs(data.jobs || []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const runJob = useCallback(async (jobName: string) => {
+    setRunning(jobName);
+    try {
+      await apiPost("/admin/cron", { jobName });
+      await loadStatus();
+    } catch { /* ignore */ }
+    setRunning(null);
+  }, [loadStatus]);
+
+  const statusColor = (s: string | null) => {
+    if (s === "ok" || s === "success") return "emerald";
+    if (s === "partial") return "amber";
+    if (s === "error") return "rose";
+    return "zinc";
+  };
+
+  const fmtTime = (iso: string | null) => {
+    if (!iso) return "Never";
+    try {
+      const d = new Date(iso);
+      const diff = Date.now() - d.getTime();
+      if (diff < 60000) return "Just now";
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+      return d.toLocaleDateString();
+    } catch { return iso; }
+  };
+
+  return (
+    <Card title="Autonomy" icon="⚡" actions={
+      <button onClick={loadStatus} disabled={loading}
+        className="text-[10px] px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 transition disabled:opacity-50">
+        {loading ? "Loading…" : "Refresh"}
+      </button>
+    }>
+      {jobs.length === 0 && !loading ? (
+        <div className="text-xs text-zinc-500 py-2">No cron job data yet. Run a scan first or check D1 connection.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {jobs.map((job) => (
+            <div key={job.jobName} className="rounded-xl bg-white/5 px-3 py-2">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs text-white font-medium">{job.jobName.replace(/_/g, " ")}</span>
+                  {job.cron && <span className="ml-2 text-[10px] text-zinc-500 font-mono">{job.cron}</span>}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Badge color={statusColor(job.status)}>{job.status || "—"}</Badge>
+                  <button
+                    onClick={() => runJob(job.jobName)}
+                    disabled={running === job.jobName}
+                    className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 transition disabled:opacity-50"
+                  >
+                    {running === job.jobName ? "Running…" : "Run"}
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-1 text-[10px] text-zinc-500">
+                <span>Last: {fmtTime(job.lastRunAt)}</span>
+                {job.itemsProcessed > 0 && <span>{job.itemsProcessed} items</span>}
+                {job.tookMs != null && <span>{job.tookMs}ms</span>}
+              </div>
+              {job.description && <div className="text-[10px] text-zinc-600 mt-0.5">{job.description}</div>}
+              {job.error && (
+                <div className="mt-1">
+                  <button onClick={() => setExpandedError(expandedError === job.jobName ? null : job.jobName)}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 transition">
+                    {expandedError === job.jobName ? "▾ Hide error" : "▸ View error"}
+                  </button>
+                  {expandedError === job.jobName && (
+                    <pre className="mt-1 text-[10px] text-rose-400/80 bg-rose-500/5 rounded p-2 overflow-x-auto">{job.error}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }

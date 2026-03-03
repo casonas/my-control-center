@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────
+# MCC Cron Worker — Cloudflare Worker with scheduled triggers
+# ─────────────────────────────────────────────────────
+# Deploy: cd worker && npx wrangler deploy
+# Test:   cd worker && npx wrangler dev --test-scheduled
+# ─────────────────────────────────────────────────────
+
+name = "mcc-cron"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# ─── D1 Database (same as Pages) ───
+[[d1_databases]]
+binding = "DB"
+database_name = "mcc-store"
+database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"
+
+# ─── Cron Triggers ───
+# These run the scheduled() handler at the specified times.
+# Adjust frequencies to stay within free-tier limits (100k req/day).
+[triggers]
+crons = [
+  "0 * * * *",           # Hourly: research_scan
+  "*/10 * * * *",        # Every 10 min: stocks_refresh
+  "15 * * * *",          # Hourly at :15: stocks_news_scan
+  "0 8 * * *",           # Daily 8am UTC: skills_radar_scan
+  "0 9,13,18 * * 1-5",   # Weekday 9am/1pm/6pm: jobs_refresh
+  "*/15 * * * *",        # Every 15 min: sports_refresh (game days)
+]
+
+# ─── Environment Variables ───
+# Set CRON_SECRET in Cloudflare dashboard → Worker → Settings → Variables
+# Do NOT put secrets in this file.
+[vars]
+WORKER_NAME = "mcc-cron"
