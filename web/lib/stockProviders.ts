@@ -221,15 +221,18 @@ export class StockIntelProvider {
     const tickerSet = new Set(tickers.map((s) => s.toUpperCase()));
     const quotes: QuoteData[] = [];
     const seen = new Set<string>();
+    let yahooError: string | undefined;
 
-    // 1) Try Yahoo Finance first
+    // 1) Try Yahoo Finance first (primary — works in Cloudflare runtime)
     try {
       const symbols = tickers.join(",");
       const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
       const res = await fetchWithRetry(yahooUrl);
       const body = await res.json() as Record<string, unknown>;
-      const qr = body.quoteResponse as Record<string, unknown> | undefined;
-      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+      const qr = (typeof body === "object" && body !== null)
+        ? (body as Record<string, unknown>).quoteResponse as Record<string, unknown> | undefined
+        : undefined;
+      const results = (qr && Array.isArray(qr.result)) ? qr.result as Record<string, unknown>[] : [];
 
       for (const r of results) {
         const sym = String(r.symbol || "").toUpperCase();
@@ -251,7 +254,13 @@ export class StockIntelProvider {
       if (quotes.length > 0 && tickers.every((tk) => seen.has(tk.toUpperCase()))) {
         return { quotes, health: { name: "yahoo", status: "ok", latencyMs: Date.now() - t } };
       }
-    } catch { /* Yahoo failed — fall through to Stock Intel */ }
+      // Yahoo returned data but parsed 0 valid quotes
+      if (quotes.length === 0) {
+        yahooError = `Yahoo returned 0 valid quotes (raw results: ${results.length}, symbols: ${symbols.slice(0, 200)})`;
+      }
+    } catch (err) {
+      yahooError = `Yahoo fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // 2) Fallback to Stock Intel (only if configured)
     if (this.available) {
@@ -284,22 +293,31 @@ export class StockIntelProvider {
     } catch { /* Stock Intel also failed */ }
     } // end if (this.available)
 
+    // Determine actual source label — don't say "stock-intel" if only yahoo was used
+    const hasYahoo = quotes.some((q) => q.source === "yahoo");
+    const hasIntel = quotes.some((q) => q.source === "stock-intel");
+    const sourceName = hasYahoo && hasIntel ? "yahoo+stock-intel" : hasYahoo ? "yahoo" : hasIntel ? "stock-intel" : "none";
     const status = quotes.length > 0 ? "ok" : "error";
-    return { quotes, health: { name: quotes.some((q) => q.source === "yahoo") ? "yahoo+stock-intel" : this.name, status, latencyMs: Date.now() - t } };
+    const errorMsg = status === "error" ? (yahooError || "All sources returned 0 quotes") : undefined;
+    return { quotes, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
   /* ── indices: Yahoo Finance first, Stock Intel fallback ────── */
   async fetchIndices(): Promise<{ indices: IndexData[]; health: SourceHealth }> {
     const t = Date.now();
     const indices: IndexData[] = [];
+    const yahooSymbols = "^GSPC,^IXIC,BTC-USD";
+    let yahooError: string | undefined;
 
     // 1) Try Yahoo Finance for ^GSPC, ^IXIC, BTC-USD
     try {
-      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent("^GSPC,^IXIC,BTC-USD")}`;
+      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSymbols)}`;
       const res = await fetchWithRetry(yahooUrl);
       const body = await res.json() as Record<string, unknown>;
-      const qr = body.quoteResponse as Record<string, unknown> | undefined;
-      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+      const qr = (typeof body === "object" && body !== null)
+        ? (body as Record<string, unknown>).quoteResponse as Record<string, unknown> | undefined
+        : undefined;
+      const results = (qr && Array.isArray(qr.result)) ? qr.result as Record<string, unknown>[] : [];
 
       const symbolMap: Record<string, string> = { "^GSPC": "SPX", "^IXIC": "IXIC", "BTC-USD": "BTC" };
       for (const r of results) {
@@ -319,7 +337,11 @@ export class StockIntelProvider {
       if (indices.length > 0) {
         return { indices, health: { name: "yahoo/indices", status: "ok", latencyMs: Date.now() - t } };
       }
-    } catch { /* Yahoo failed — fall through */ }
+      // Yahoo returned data but parsed 0 valid indices
+      yahooError = `Yahoo returned 0 valid indices (raw results: ${results.length}, symbols: ${yahooSymbols})`;
+    } catch (err) {
+      yahooError = `Yahoo indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // 2) Fallback to Stock Intel summaries (only if configured)
     if (this.available) {
@@ -341,7 +363,9 @@ export class StockIntelProvider {
     } // end if (this.available)
 
     const status = indices.length > 0 ? "ok" : "error";
-    return { indices, health: { name: indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : `${this.name}/summaries`, status, latencyMs: Date.now() - t } };
+    const sourceName = indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : indices.length > 0 ? `${this.name}/summaries` : "none/indices";
+    const errorMsg = status === "error" ? (yahooError || `All index sources returned empty (requested: ${yahooSymbols})`) : undefined;
+    return { indices, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
   /* ── movers (GET /market/movers-by-news) ─────────── */
@@ -504,6 +528,43 @@ export async function storeRegimeSnapshot(
 }
 
 /* ================================================================
+   Text sanitisation — decode HTML entities, strip tag leftovers
+   ================================================================ */
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+  nbsp: " ", ndash: "–", mdash: "—", lsquo: "\u2018",
+  rsquo: "\u2019", ldquo: "\u201C", rdquo: "\u201D",
+  bull: "•", hellip: "…", trade: "™", copy: "©", reg: "®",
+};
+
+/** Decode numeric + named HTML entities, strip leftover tags, collapse whitespace. */
+export function sanitizeText(raw: string): string {
+  if (!raw) return "";
+  let s = raw;
+  // numeric entities (dec & hex)
+  s = s.replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => {
+    const cp = parseInt(hex, 16);
+    return cp > 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : "";
+  });
+  s = s.replace(/&#(\d+);/g, (_, dec) => {
+    const cp = parseInt(dec, 10);
+    return cp > 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : "";
+  });
+  // named entities (strip unresolved ones)
+  s = s.replace(/&([A-Za-z]+);/g, (_, name) => NAMED_ENTITIES[name.toLowerCase()] ?? "");
+  // strip any remaining broken entity-like fragments (e.g. "&amp" without semicolon)
+  s = s.replace(/&[A-Za-z]{2,8}(?=[^;A-Za-z]|$)/g, "");
+  // strip any remaining HTML tags
+  s = s.replace(/<[^>]*>/g, " ");
+  // collapse whitespace
+  s = s.replace(/\s+/g, " ").trim();
+  // trim weird trailing punctuation fragments  ( e.g. "headline ;" or "headline |" )
+  s = s.replace(/\s*[;|\\]+\s*$/, "");
+  return s;
+}
+
+/* ================================================================
    RSS news feeds (free fallback when Stock Intel is unavailable)
    ================================================================ */
 
@@ -515,34 +576,176 @@ export const STOCK_NEWS_FEEDS = [
   { name: "SEC Litigation", url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=LIT&dateb=&owner=include&count=40&search_text=&action=getcompany&RSS=1" },
 ];
 
+/* ================================================================
+   Quality gate — high-signal headline filter
+   ================================================================ */
+
+const LOW_SIGNAL_PATTERNS = [
+  /\bmarket\s*wrap\b/i,
+  /\bweekly\s*roundup\b/i,
+  /\bmorning\s*brief\b/i,
+  /\beverything\s*you\s*need\s*to\s*know\b/i,
+  /\bwhat\s*to\s*watch\s*today\b/i,
+  /\bpremarket\s*buzz\b/i,
+  /\bstock\s*futures\s*(are\s*)?(mixed|flat|little changed)\b/i,
+  /\bmarkets?\s*(close|end)\s*(higher|lower|mixed|flat)\b/i,
+  /\bhere'?s?\s*what\s*happened\b/i,
+  /\btop\s*stories\s*for\b/i,
+  /\bshould\s+you\s+(buy|sell)\b/i,
+  /\bwhat\s+.{0,30}\s+means\s+for\b/i,
+  /\bmarket\s*snapshot\b/i,
+  /\bmarket\s*briefing\b/i,
+  /\bbest\s+(savings?|cd|bank|credit\s*card|mortgage)\b/i,
+  /\bhome\s*buy(ing|ers?)\b/i,
+  /\bpersonal\s*finance\b/i,
+  /\bretire(ment)?\s*(planning|saving|tips)\b/i,
+  /\bhow\s+to\s+(save|invest|budget|pay off)\b/i,
+  /\bbest\s+stocks?\s+to\s+buy\b/i,
+  /\btop\s+\d+\s+(picks?|stocks?)\b/i,
+];
+
+const STRONG_CATALYST_PATTERNS = [
+  /\bearnings?\b|\bquarter(ly)?\sresults?\b|\brevenue\b|\bbeat\b|\bmiss(es)?\b|\beps\b/i,
+  /\bguidance\b|\boutlook\b|\braise[ds]?\s.*guidance\b|\blower[eds]?\s.*forecast\b/i,
+  /\bupgrade[ds]?\b|\bdowngrade[ds]?\b|\bprice\s*target\b|\banalyst\b/i,
+  /\bacquisition\b|\bmerger\b|\bm\s*&\s*a\b|\bbuyout\b|\btakeover\b/i,
+  /\blaunch(es|ed)?\b|\bfda\s*approv(al|ed)\b|\bnew\s+product\b/i,
+  /\blawsuit\b|\bprobe\b|\bsec\s+(charges?|investigat)\b|\bfraud\b/i,
+  /\bbankrupt(cy)?\b|\bdefault\b|\bdelisting\b/i,
+];
+
 /** Returns false for generic/low-value headlines (market wraps, roundups, etc.) */
 export function isQualityHeadline(title: string): boolean {
-  const GENERIC_PATTERNS = [
-    /\bmarket\s*wrap\b/i,
-    /\bweekly\s*roundup\b/i,
-    /\bmorning\s*brief\b/i,
-    /\beverything\s*you\s*need\s*to\s*know\b/i,
-    /\bwhat\s*to\s*watch\s*today\b/i,
-    /\bpremarket\s*buzz\b/i,
-    /\bstock\s*futures\s*(are\s*)?(mixed|flat|little changed)\b/i,
-    /\bmarkets?\s*(close|end)\s*(higher|lower|mixed|flat)\b/i,
-    /\bhere'?s?\s*what\s*happened\b/i,
-    /\btop\s*stories\s*for\b/i,
-  ];
   if (!title || title.length < 15) return false;
-  for (const p of GENERIC_PATTERNS) {
-    if (p.test(title)) return false;
-  }
+  for (const p of LOW_SIGNAL_PATTERNS) if (p.test(title)) return false;
   return true;
 }
 
-/** Extract $TICKER mentions from text (e.g. "$AAPL gains 3%") */
-export function extractTickersFromText(text: string): string[] {
+/**
+ * Stricter quality gate: returns true only for headlines likely to
+ * carry an actionable stock catalyst or watchlist-relevant signal.
+ */
+export function isHighSignalHeadline(title: string, summary?: string | null): boolean {
+  if (!title || title.length < 15) return false;
+  const text = `${title} ${summary || ""}`;
+  // Hard drop low-signal
+  for (const p of LOW_SIGNAL_PATTERNS) if (p.test(text)) return false;
+  // Auto-keep if strong catalyst detected
+  for (const p of STRONG_CATALYST_PATTERNS) if (p.test(text)) return true;
+  // Auto-keep if contains $TICKER reference
+  if (/\$[A-Z]{1,5}\b/.test(text)) return true;
+  // Pass through — will be ranked by relevance scoring
+  return true;
+}
+
+/* ================================================================
+   Watchlist-first relevance scoring
+   ================================================================ */
+
+export interface NewsRelevanceResult {
+  impactScore: number;
+  reasonTags: string[];
+  isWatchlistRelevant: boolean;
+}
+
+const PREMIUM_SOURCES = new Set(["Reuters Tech", "SEC Litigation", "WSJ Markets"]);
+
+export function scoreNewsRelevance(
+  title: string,
+  summary: string | null | undefined,
+  ticker: string | null | undefined,
+  watchlistTickers: Set<string>,
+  catalystType: string | null | undefined,
+  source: string,
+  publishedAt: string | null | undefined,
+): NewsRelevanceResult {
+  let score = 0;
+  const reasons: string[] = [];
+
+  // +4 watchlist ticker
+  if (ticker && watchlistTickers.has(ticker.toUpperCase())) {
+    score += 4; reasons.push("watchlist_ticker");
+  }
+
+  // +3 strong catalyst type
+  const strongCatalysts = new Set(["earnings", "guidance", "m&a", "analyst_rating", "legal", "product"]);
+  if (catalystType && strongCatalysts.has(catalystType)) {
+    score += 3; reasons.push(catalystType);
+  }
+
+  // +2 premium source
+  if (PREMIUM_SOURCES.has(source)) {
+    score += 2; reasons.push(`${source.toLowerCase().replace(/\s+/g, "_")}_source`);
+  }
+
+  // -3 low signal
+  const text = `${title} ${summary || ""}`;
+  for (const p of LOW_SIGNAL_PATTERNS) {
+    if (p.test(text)) { score -= 3; reasons.push("low_signal"); break; }
+  }
+
+  // -2 no ticker and no catalyst
+  if (!ticker && !catalystType) {
+    score -= 2; reasons.push("no_ticker_no_catalyst");
+  }
+
+  // -1 older than 24h
+  if (publishedAt) {
+    const age = Date.now() - new Date(publishedAt).getTime();
+    if (age > 24 * 60 * 60 * 1000) { score -= 1; reasons.push("stale_24h"); }
+  }
+
+  return {
+    impactScore: score,
+    reasonTags: reasons,
+    isWatchlistRelevant: ticker != null && watchlistTickers.has(ticker.toUpperCase()),
+  };
+}
+
+/* ================================================================
+   Ticker extraction — improved with stop-word filter
+   ================================================================ */
+
+const TICKER_STOP_WORDS = new Set([
+  "A", "I", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO",
+  "IF", "IN", "IS", "IT", "MY", "NO", "OF", "ON", "OR", "SO",
+  "TO", "UP", "US", "WE", "AI", "CEO", "CFO", "CTO", "COO",
+  "FOR", "THE", "AND", "BUT", "NOT", "HAS", "HAD", "ARE", "WAS",
+  "ALL", "CAN", "HER", "HIM", "HIS", "HOW", "ITS", "LET", "MAY",
+  "NEW", "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "TOO",
+  "TWO", "WAY", "WHO", "BOY", "DID", "GET", "HIT", "HOT", "LOW",
+  "MAN", "OIL", "PUT", "RAN", "RED", "RUN", "TOP", "WIN", "YES",
+  "SEC", "FDA", "IPO", "ETF", "GDP", "IMF", "USA", "NYSE", "CEO",
+]);
+
+/**
+ * Extract $TICKER mentions from text (high confidence),
+ * plus ALL-CAPS tokens that are in the watchlist (medium confidence).
+ */
+export function extractTickersFromText(text: string, watchlistTickers?: Set<string>): string[] {
   if (!text) return [];
-  const matches = text.match(/\$([A-Za-z]{1,5})\b/g);
-  if (!matches) return [];
-  const tickers = [...new Set(matches.map((m) => m.slice(1).toUpperCase()))];
-  return tickers.filter((t) => t.length >= 1 && t.length <= 5);
+  const found = new Set<string>();
+
+  // High confidence: $TICKER pattern
+  const dollarMatches = text.match(/\$([A-Za-z]{1,5})\b/g);
+  if (dollarMatches) {
+    for (const m of dollarMatches) {
+      const t = m.slice(1).toUpperCase();
+      if (t.length >= 1 && t.length <= 5 && !TICKER_STOP_WORDS.has(t)) found.add(t);
+    }
+  }
+
+  // Medium confidence: ALL-CAPS tokens that are in watchlist
+  if (watchlistTickers && watchlistTickers.size > 0) {
+    const capMatches = text.match(/\b([A-Z]{1,5})\b/g);
+    if (capMatches) {
+      for (const m of capMatches) {
+        if (watchlistTickers.has(m) && !TICKER_STOP_WORDS.has(m)) found.add(m);
+      }
+    }
+  }
+
+  return [...found];
 }
 
 export interface NewsScanResult {
@@ -561,32 +764,42 @@ export async function scanNewsFeeds(
   let newItems = 0;
   const sources: SourceHealth[] = [];
 
+  // Build watchlist set for relevance scoring
+  let watchlistSet = new Set<string>();
+  try {
+    const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all<{ ticker: string }>();
+    watchlistSet = new Set((wl.results || []).map((r) => r.ticker.toUpperCase()));
+  } catch { /* non-fatal */ }
+
   // 1) Stock Intel per-ticker news
   if (intelProvider) {
     const start = Date.now();
     try {
-      const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all<{ ticker: string }>();
-      for (const { ticker } of (wl.results || []).slice(0, 20)) {
+      for (const ticker of [...watchlistSet].slice(0, 20)) {
         try {
           const { items, health } = await intelProvider.getTickerNews(ticker);
           if (health.status !== "ok") continue;
           for (const item of items) {
-            const title = String(item.title || item.headline || "").slice(0, 300);
+            const rawTitle = String(item.title || item.headline || "");
+            const rawSummary = String(item.summary || item.description || "");
+            const title = sanitizeText(rawTitle).slice(0, 300);
+            const summary = sanitizeText(rawSummary).slice(0, 400) || null;
             const url = String(item.url || item.link || "");
             if (!title || !url) continue;
+            if (!isHighSignalHeadline(title, summary)) continue;
             const dedupeKey = url.replace(/[?#].*$/, "").toLowerCase();
-            const catalyst = classifyCatalyst(title, String(item.summary || ""));
-            const sentiment = item.sentiment_score != null ? Number(item.sentiment_score) : scoreSentiment(title, String(item.summary || ""));
+            const catalyst = classifyCatalyst(title, summary);
+            const sentiment = item.sentiment_score != null ? Number(item.sentiment_score) : scoreSentiment(title, summary);
+            const pubAt = String(item.published_at || item.date || "");
+            const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, "stock-intel", pubAt);
             try {
               await db.prepare(
                 `INSERT OR IGNORE INTO stock_news_items
                  (id, user_id, ticker, title, source, url, published_at, fetched_at, summary, impact_score, dedupe_key, sentiment_score, catalyst_type)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               ).bind(
                 crypto.randomUUID(), userId, ticker, title, "stock-intel", url,
-                String(item.published_at || item.date || ""), now,
-                String(item.summary || item.description || "").slice(0, 400) || null,
-                dedupeKey, sentiment, catalyst,
+                pubAt, now, summary, rel.impactScore, dedupeKey, sentiment, catalyst,
               ).run();
               newItems++;
             } catch { /* dedupe */ }
@@ -607,18 +820,24 @@ export async function scanNewsFeeds(
       const xml = await res.text();
       for (const item of parseFeed(xml)) {
         if (!item.url || !item.title) continue;
+        const title = sanitizeText(item.title).slice(0, 300);
+        const summary = item.summary ? sanitizeText(item.summary).slice(0, 400) : null;
+        if (!isHighSignalHeadline(title, summary)) continue;
         const dedupeKey = item.url.replace(/[?#].*$/, "").toLowerCase();
-        const catalyst = classifyCatalyst(item.title, item.summary);
-        const sentiment = scoreSentiment(item.title, item.summary);
+        const catalyst = classifyCatalyst(title, summary);
+        const sentiment = scoreSentiment(title, summary);
+        // Try to extract a ticker from the headline
+        const extracted = extractTickersFromText(`${title} ${summary || ""}`, watchlistSet);
+        const ticker = extracted.length > 0 ? extracted[0] : null;
+        const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, feed.name, item.publishedAt);
         try {
           await db.prepare(
             `INSERT OR IGNORE INTO stock_news_items
              (id, user_id, ticker, title, source, url, published_at, fetched_at, summary, impact_score, dedupe_key, sentiment_score, catalyst_type)
-             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).bind(
-            crypto.randomUUID(), userId, item.title.slice(0, 300), feed.name, item.url,
-            item.publishedAt, now, item.summary?.slice(0, 400) || null,
-            dedupeKey, sentiment, catalyst,
+            crypto.randomUUID(), userId, ticker, title, feed.name, item.url,
+            item.publishedAt, now, summary, rel.impactScore, dedupeKey, sentiment, catalyst,
           ).run();
           newItems++;
         } catch { /* dedupe */ }

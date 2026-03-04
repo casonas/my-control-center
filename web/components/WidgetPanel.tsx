@@ -2113,7 +2113,7 @@ function StocksWidgets(_props: { refresh: () => void }) {
   interface WlItem { ticker: string; display_name?: string; sector?: string; market_cap_bucket?: string; tags_json?: string }
   interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; volume?: number | null; premarket_price?: number | null; premarket_change_pct?: number | null; asof?: string; source?: string }
   interface IndexItem { symbol: string; value: number; change_pct?: number; asof?: string; source?: string }
-  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string; catalyst_type?: string; sentiment_score?: number }
+  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string; catalyst_type?: string; sentiment_score?: number; ticker?: string; qualityScore?: number; isWatchlistRelevant?: boolean; reasonTags?: string[] }
   interface InsightItem { id: string; title: string; bullets_json: string; body_md?: string; sentiment?: string; ticker?: string; created_at: string; insight_type?: string }
   interface FreshnessInfo { asof: string; ageSeconds: number; stale: boolean; source: string }
   interface OutlierItem { id: string; ticker: string; outlier_type: string; z_score: number; details_json: string; asof: string }
@@ -2362,13 +2362,14 @@ function StocksWidgets(_props: { refresh: () => void }) {
       {/* Market News */}
       <Card title="Market News" icon="📰">
         <div className="space-y-2 max-h-64 overflow-auto">
-          {news.length === 0 && <div className="text-[10px] text-zinc-500">Click Scan News to fetch market headlines.</div>}
+          {news.length === 0 && <div className="text-[10px] text-zinc-500">No high-signal headlines. Tap Scan News.</div>}
           {news.map((n) => (
             <a key={n.id} href={n.url} target="_blank" rel="noopener noreferrer"
               className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
               <div className="flex items-start justify-between gap-2">
                 <div className="text-xs text-white hover:underline">{n.title} ↗</div>
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 flex-wrap justify-end">
+                  {n.ticker && <Badge color={n.isWatchlistRelevant ? "lime" : "zinc"}>{n.ticker}</Badge>}
                   {catalystBadge(n.catalyst_type)}
                   {n.sentiment_score != null && n.sentiment_score !== 0 && (
                     <Badge color={n.sentiment_score > 0 ? "emerald" : "rose"}>
@@ -2377,7 +2378,12 @@ function StocksWidgets(_props: { refresh: () => void }) {
                   )}
                 </div>
               </div>
-              <div className="text-[10px] text-zinc-500 mt-0.5">{n.source} · {n.published_at ? new Date(n.published_at).toLocaleDateString() : ""}</div>
+              <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                <span className="text-[10px] text-zinc-500">{n.source} · {n.published_at ? new Date(n.published_at).toLocaleDateString() : ""}</span>
+                {n.reasonTags && n.reasonTags.slice(0, 2).filter((t) => t !== "watchlist_ticker" && t !== (n.catalyst_type || "")).map((tag) => (
+                  <span key={tag} className="inline-block rounded-full bg-zinc-800 px-1.5 py-px text-[8px] text-zinc-400">{tag.replace(/_/g, " ")}</span>
+                ))}
+              </div>
             </a>
           ))}
         </div>
