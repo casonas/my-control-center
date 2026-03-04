@@ -186,24 +186,50 @@ export async function runStocksRefresh(db: D1Database, userId: string) {
   const jobKey = `stocks_refresh_${userId}`;
 
   try {
+    // Dynamically import provider + store helpers
+    const { getStockIntelProvider, storeQuotes, storeIndices } = await import("./stockProviders");
+
+    // 1. Get watchlist tickers
     const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all<{ ticker: string }>();
     const tickers = (wl.results || []).map((r) => r.ticker);
-    const now = new Date().toISOString();
 
-    for (const ticker of tickers) {
-      await db.prepare(
-        `INSERT OR REPLACE INTO stock_quotes (user_id, ticker, price, change, change_pct, currency, asof, source) VALUES (?, ?, 0, 0, 0, 'USD', ?, 'pending')`
-      ).bind(userId, ticker, now).run();
+    // 2. Fetch quotes via provider (Yahoo → Stock Intel fallback)
+    const provider = getStockIntelProvider();
+    const sourceHealth: Record<string, { ok: boolean; latencyMs?: number; error?: string }> = {};
+
+    const { quotes, health: quotesHealth } = await provider.fetchQuotes(tickers);
+    sourceHealth.quotes = { ok: quotesHealth.status === "ok", latencyMs: quotesHealth.latencyMs, error: quotesHealth.error };
+
+    // 3. Fetch indices via provider (Yahoo → Stock Intel fallback)
+    const { indices, health: indicesHealth } = await provider.fetchIndices();
+    sourceHealth.indices = { ok: indicesHealth.status === "ok", latencyMs: indicesHealth.latencyMs, error: indicesHealth.error };
+
+    // 4. Store results (only store non-zero prices)
+    const validQuotes = quotes.filter((q) => q.price > 0);
+    if (validQuotes.length > 0) {
+      await storeQuotes(db, userId, validQuotes);
     }
-    for (const sym of ["SPX", "IXIC", "BTC"]) {
-      await db.prepare(
-        `INSERT OR REPLACE INTO market_indices (user_id, symbol, value, change_pct, asof, source) VALUES (?, ?, 0, 0, ?, 'pending')`
-      ).bind(userId, sym, now).run();
+
+    const validIndices = indices.filter((i) => i.value > 0 || i.change_pct !== 0);
+    if (validIndices.length > 0) {
+      await storeIndices(db, userId, validIndices);
     }
+
+    // 5. Determine overall status
+    const allOk = quotesHealth.status === "ok" && indicesHealth.status === "ok";
+    const status = allOk ? "ok" : validQuotes.length > 0 || validIndices.length > 0 ? "partial" : "error";
 
     const tookMs = Date.now() - start;
-    await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: tickers.length, tookMs });
-    return { ok: true, tickers: tickers.length, indices: 3, tookMs, source: "pending" };
+    await updateCronRun(db, jobKey, { status, itemsProcessed: validQuotes.length + validIndices.length, tookMs });
+
+    return {
+      ok: true,
+      status,
+      tickers: validQuotes.length,
+      indices: validIndices.length,
+      sourceHealth,
+      tookMs,
+    };
   } catch (err) {
     const tookMs = Date.now() - start;
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -215,6 +241,9 @@ export async function runStocksRefresh(db: D1Database, userId: string) {
 const STOCK_NEWS_FEEDS = [
   { name: "MarketWatch", url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
   { name: "CNBC", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
+  { name: "Reuters Tech", url: "https://feeds.reuters.com/reuters/technologyNews" },
+  { name: "WSJ Markets", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
+  { name: "SEC Litigation", url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=LIT&dateb=&owner=include&count=40&search_text=&action=getcompany&RSS=1" },
 ];
 
 export async function runStocksNewsScan(db: D1Database, userId: string) {
