@@ -1244,6 +1244,11 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
 
+  // Curate Skills state
+  const [curateMode, setCurateMode] = useState(false);
+  const [curateSelected, setCurateSelected] = useState<Set<string>>(new Set());
+  const [curateResult, setCurateResult] = useState<string | null>(null);
+
   // API-backed data
   interface RoadmapItem {
     id: string; skill_id: string; skill_name: string; category?: string; level: string;
@@ -1325,6 +1330,29 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
     } catch { /* non-fatal */ }
   }
 
+  async function handleCurate() {
+    if (curateSelected.size === 0) return;
+    setCurateResult(null);
+    try {
+      const keepNames = [...curateSelected];
+      const d = await apiPost<{ ok: boolean; deleted: number }>("/skills/curate", { keepNames });
+      setCurateResult(d.ok ? `Removed ${d.deleted} skill(s)` : "Failed");
+      setCurateMode(false);
+      setCurateSelected(new Set());
+      loadRoadmap();
+      refresh();
+    } catch (e) { setCurateResult(e instanceof Error ? e.message : "Failed"); }
+  }
+
+  function toggleCurateSelection(skillName: string) {
+    setCurateSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(skillName)) next.delete(skillName);
+      else next.add(skillName);
+      return next;
+    });
+  }
+
   // Merge: prefer API roadmap; fallback to local
   const displaySkills = hasApi ? roadmap : localSkills.map((s, i) => ({
     id: `local-${s.id}`, skill_id: s.id, skill_name: s.name, category: s.category, level: "beginner",
@@ -1355,7 +1383,15 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
       <div id="skills-continue" className="glass-light rounded-2xl p-4 animate-fade-in">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-semibold text-zinc-100">Overall Progress</span>
-          <span className="text-xs text-zinc-400">{avgProgress}%</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400">{avgProgress}%</span>
+            <button onClick={() => { setCurateMode(!curateMode); setCurateSelected(new Set(displaySkills.map((s) => s.skill_name))); setCurateResult(null); }}
+              className={cx("text-[10px] px-2 py-1 rounded-lg transition",
+                curateMode ? "bg-rose-500/20 text-rose-400 hover:bg-rose-500/30" : "bg-violet-500/20 text-violet-400 hover:bg-violet-500/30"
+              )}>
+              {curateMode ? "Cancel" : "✂ Curate Skills"}
+            </button>
+          </div>
         </div>
         <ProgressBar value={avgProgress} gradient="from-amber-500 to-orange-500" />
         <div className="mt-2 grid grid-cols-3 gap-2 text-center">
@@ -1363,7 +1399,33 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
           <div><div className="text-sm font-bold text-white">{totalLessons}</div><div className="text-[10px] text-zinc-400">Lessons</div></div>
           <div><div className="text-sm font-bold text-white">{completedLessons}</div><div className="text-[10px] text-zinc-400">Completed</div></div>
         </div>
+        {curateResult && <div className="text-[10px] text-zinc-400 mt-2">{curateResult}</div>}
       </div>
+
+      {/* Curate mode: checkboxes + Keep Selected */}
+      {curateMode && (
+        <div className="glass-light rounded-2xl p-4 animate-fade-in border border-violet-500/20">
+          <div className="text-[10px] text-violet-400 font-semibold mb-2">Select skills to KEEP (unchecked will be deleted with all lessons)</div>
+          <div className="space-y-1.5 max-h-48 overflow-auto">
+            {displaySkills.map((skill) => (
+              <label key={skill.skill_id} className="flex items-center gap-2 cursor-pointer rounded-lg bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+                <input type="checkbox" checked={curateSelected.has(skill.skill_name)}
+                  onChange={() => toggleCurateSelection(skill.skill_name)}
+                  className="w-3.5 h-3.5 rounded accent-violet-500" />
+                <span className="text-xs text-white">{skill.skill_name}</span>
+                <span className="text-[10px] text-zinc-500 ml-auto">{skill.completed_lessons}/{skill.total_lessons} lessons</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-3">
+            <button onClick={handleCurate}
+              className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 transition">
+              Keep Selected ({curateSelected.size})
+            </button>
+            <span className="text-[10px] text-zinc-500">{displaySkills.length - curateSelected.size} will be removed</span>
+          </div>
+        </div>
+      )}
 
       {/* Continue where you left off */}
       {continueItem && (
@@ -1560,6 +1622,10 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
   const [sourceHealth, setSourceHealth] = useState<Record<string, SourceHealth>>({});
 
+  // Line Movement state
+  interface Movement { game_id: string; home_team: string; away_team: string; book: string; market: string; old_line: number; new_line: number; delta: number; direction: string; minutes_ago: number }
+  const [movements, setMovements] = useState<Movement[]>([]);
+
   const loadGames = useCallback(async () => {
     try {
       const d = await apiGet<{ games: Game[] }>(`/sports/games?league=${league}&filter=${filter}`);
@@ -1595,7 +1661,15 @@ function SportsWidgets(_props: { refresh: () => void }) {
     } catch { /* */ }
   }, [league]);
 
-  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews]);
+  const loadMovements = useCallback(async () => {
+    if (league !== "nba") { setMovements([]); return; }
+    try {
+      const d = await apiGet<{ movements: Movement[] }>("/sports/nba/movement");
+      setMovements(d.movements || []);
+    } catch { /* */ }
+  }, [league]);
+
+  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); loadMovements(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews, loadMovements]);
 
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
@@ -1609,7 +1683,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
       if (d.predictions) parts.push(`${d.predictions} picks`);
       setStatusMsg(d.ok ? (parts.length > 0 ? parts.join(", ") : "No new data") : (d.error || "Failed"));
       setLastUpdated(new Date().toLocaleTimeString());
-      loadGames(); loadOdds(); loadNews(); loadPredictions();
+      loadGames(); loadOdds(); loadNews(); loadPredictions(); loadMovements();
     } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
     finally { setRefreshing(false); }
   }
@@ -1754,6 +1828,42 @@ function SportsWidgets(_props: { refresh: () => void }) {
           <div className="text-[10px] text-zinc-400">Select a game above to view odds.</div>
         )}
       </Card>
+
+      {/* Line Movement Tracker */}
+      {league === "nba" && (
+        <Card title="Line Movement" icon="📈">
+          {movements.length > 0 ? (
+            <div className="space-y-1.5 max-h-48 overflow-auto">
+              {movements.map((m, i) => (
+                <div key={`${m.game_id}-${m.book}-${i}`} className="rounded-xl bg-white/5 px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-white font-medium">{m.away_team} @ {m.home_team}</div>
+                    <span className={cx("text-[10px] px-1.5 py-0.5 rounded-full font-medium",
+                      m.direction === "steam" ? "bg-rose-500/20 text-rose-400" :
+                      m.direction === "reverse" ? "bg-amber-500/20 text-amber-400" :
+                      "bg-zinc-500/20 text-zinc-400"
+                    )}>{m.direction}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1 text-[10px]">
+                    <span className="text-zinc-500">{m.book}</span>
+                    <span className="text-zinc-400">{m.old_line > 0 ? "+" : ""}{m.old_line}</span>
+                    <span className="text-zinc-600">→</span>
+                    <span className={cx("font-medium", m.delta > 0 ? "text-emerald-400" : "text-rose-400")}>
+                      {m.new_line > 0 ? "+" : ""}{m.new_line}
+                    </span>
+                    <span className={cx("font-bold", m.delta > 0 ? "text-emerald-400" : "text-rose-400")}>
+                      ({m.delta > 0 ? "+" : ""}{m.delta})
+                    </span>
+                    <span className="text-zinc-600 ml-auto">{m.minutes_ago}m ago</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[10px] text-zinc-500 py-2">No significant line movements detected. Movements appear after multiple refreshes when odds shift ≥0.5 pts.</div>
+          )}
+        </Card>
+      )}
 
       {/* Projections for active game */}
       <Card title="Projections" icon="🎯">
@@ -1912,6 +2022,12 @@ function StocksWidgets(_props: { refresh: () => void }) {
   const [scanning, setScanning] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  // FIX 4: new state for auto-refresh + ticker detail
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [tickerDetail, setTickerDetail] = useState<{ news: { title: string; url: string; source: string; published_at?: string; summary?: string; sentiment_score?: number | null }[]; analysis: Record<string, unknown> | null } | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+
   const loadAll = useCallback(async () => {
     try { const d = await apiGet<{ tickers: WlItem[] }>("/stocks/watchlist"); setWatchlist(d.tickers || []); } catch { /* */ }
     try {
@@ -1932,6 +2048,24 @@ function StocksWidgets(_props: { refresh: () => void }) {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // FIX 4: Auto-refresh every 30s when enabled
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => { loadAll(); setLastRefresh(new Date().toLocaleTimeString()); }, 30_000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, loadAll]);
+
+  // FIX 4: Load ticker detail when selectedTicker changes
+  useEffect(() => {
+    if (!selectedTicker) { setTickerDetail(null); return; }
+    (async () => {
+      const detail: { news: { title: string; url: string; source: string; published_at?: string; summary?: string; sentiment_score?: number | null }[]; analysis: Record<string, unknown> | null } = { news: [], analysis: null };
+      try { const d = await apiGet<{ items: typeof detail.news }>(`/stocks/ticker/${selectedTicker}/news`); detail.news = d.items || []; } catch { /* */ }
+      try { const d = await apiGet<{ analysis: Record<string, unknown> | null }>(`/stocks/ticker/${selectedTicker}/why`); detail.analysis = d.analysis; } catch { /* */ }
+      setTickerDetail(detail);
+    })();
+  }, [selectedTicker]);
 
   async function handleAddTicker() {
     if (!addTicker.trim()) return;
@@ -2027,6 +2161,12 @@ function StocksWidgets(_props: { refresh: () => void }) {
             className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition">
             {scanning ? "Scanning…" : "📰 Scan News"}
           </button>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="w-3 h-3 rounded accent-lime-500" />
+            <span className="text-[10px] text-zinc-400">Auto</span>
+          </label>
+          {lastRefresh && <span className="text-[9px] text-zinc-600">↻ {lastRefresh}</span>}
         </div>
       </div>
       {statusMsg && <div className="text-[10px] text-zinc-400 px-1">{statusMsg}</div>}
@@ -2056,7 +2196,7 @@ function StocksWidgets(_props: { refresh: () => void }) {
             const hasData = q && q.price > 0;
             const isUp = hasData && (q.change_pct || 0) >= 0;
             return (
-              <div key={w.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition group">
+              <div key={w.ticker} onClick={() => setSelectedTicker(w.ticker)} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition group cursor-pointer">
                 <div>
                   <div className="text-xs font-semibold text-white">{w.ticker}</div>
                   <div className="text-[10px] text-zinc-500">{w.display_name || ""}{w.market_cap_bucket && w.market_cap_bucket !== "large" ? ` · ${w.market_cap_bucket}` : ""}</div>
@@ -2182,11 +2322,65 @@ function StocksWidgets(_props: { refresh: () => void }) {
             })}
           </div>
         )}
-        <button onClick={() => apiPost("/stocks/insights/generate", {}).catch(() => {})}
+        <button onClick={() => { apiPost("/stocks/insights/generate", {}).then(() => loadAll()).catch(() => {}); }}
           className="mt-2 px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 transition">
           Generate Briefing →
         </button>
       </Card>
+
+      {/* FIX 4: Ticker Detail Modal */}
+      {selectedTicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setSelectedTicker(null)}>
+          <div className="w-full max-w-md mx-4 glass rounded-2xl p-5 max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-white">{selectedTicker} — Detail</h3>
+              <button onClick={() => setSelectedTicker(null)} className="text-zinc-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            {/* Quote summary */}
+            {(() => { const q = quoteMap[selectedTicker]; return q && q.price > 0 ? (
+              <div className="rounded-xl bg-white/5 p-3 mb-3">
+                <div className="text-lg font-bold text-white">${q.price.toFixed(2)}</div>
+                <div className={cx("text-xs font-medium", (q.change_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  {(q.change_pct || 0) >= 0 ? "▲" : "▼"} {Math.abs(q.change_pct || 0).toFixed(2)}%
+                </div>
+              </div>
+            ) : null; })()}
+
+            {/* Why moving analysis */}
+            {tickerDetail?.analysis && (
+              <div className="mb-3">
+                <div className="text-[10px] font-semibold text-zinc-400 uppercase mb-1">Why Moving</div>
+                <div className="rounded-xl bg-white/5 p-3 text-xs text-zinc-300">
+                  {typeof tickerDetail.analysis === "object" ? (
+                    Object.entries(tickerDetail.analysis).map(([k, v]) => (
+                      <div key={k} className="mb-1"><span className="text-zinc-500">{k}:</span> {String(v)}</div>
+                    ))
+                  ) : String(tickerDetail.analysis)}
+                </div>
+              </div>
+            )}
+
+            {/* Ticker news */}
+            <div className="text-[10px] font-semibold text-zinc-400 uppercase mb-1">Recent News</div>
+            {!tickerDetail ? (
+              <div className="text-[10px] text-zinc-500 py-4 text-center">Loading…</div>
+            ) : tickerDetail.news.length === 0 ? (
+              <div className="text-[10px] text-zinc-500 py-4 text-center">No news found for {selectedTicker}</div>
+            ) : (
+              <div className="space-y-1.5 max-h-48 overflow-auto">
+                {tickerDetail.news.slice(0, 10).map((n, i) => (
+                  <a key={i} href={n.url} target="_blank" rel="noopener noreferrer"
+                    className="block rounded-lg bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+                    <div className="text-[11px] text-white">{n.title} ↗</div>
+                    <div className="text-[9px] text-zinc-500 mt-0.5">{n.source} {n.published_at ? `· ${new Date(n.published_at).toLocaleDateString()}` : ""}</div>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
