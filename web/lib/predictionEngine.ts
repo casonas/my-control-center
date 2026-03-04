@@ -48,14 +48,27 @@ export interface PredictionRow {
 // ─── Horizon → due_at computation ───────────────────
 
 function computeDueAt(horizon: Horizon): string {
-  const now = Date.now();
-  const offsets: Record<Horizon, number> = {
-    intraday: 16 * 60 * 60 * 1000,    // EOD (16h from midnight)
+  const now = new Date();
+  if (horizon === "intraday") {
+    // Next market close: 4pm ET = 20:00 UTC (or 21:00 during DST)
+    const eod = new Date(now);
+    eod.setUTCHours(20, 0, 0, 0);
+    if (eod.getTime() <= now.getTime()) eod.setUTCDate(eod.getUTCDate() + 1);
+    return eod.toISOString();
+  }
+  const offsets: Record<string, number> = {
     "1d": 24 * 60 * 60 * 1000,
     "1w": 7 * 24 * 60 * 60 * 1000,
     "1m": 30 * 24 * 60 * 60 * 1000,
   };
-  return new Date(now + offsets[horizon]).toISOString();
+  return new Date(now.getTime() + (offsets[horizon] || offsets["1d"])).toISOString();
+}
+
+// ─── Shared direction helper (used by predictionEngine + worker) ──
+
+export function isPredictedUp(predictionText: string, targetChangePct: number | null): boolean {
+  const text = predictionText.toLowerCase();
+  return text.includes("up") || text.includes("bull") || (targetChangePct !== null && targetChangePct > 0);
 }
 
 // ─── Create prediction ──────────────────────────────
@@ -129,10 +142,7 @@ export async function resolvePredictions(db: D1Database, userId: string): Promis
         // Hit/miss logic
         let hit = 0;
         if (pred.prediction_type === "direction") {
-          // Was the direction prediction correct?
-          const predictedUp = pred.prediction_text.toLowerCase().includes("up") ||
-            pred.prediction_text.toLowerCase().includes("bull") ||
-            (pred.target_change_pct !== null && pred.target_change_pct > 0);
+          const predictedUp = isPredictedUp(pred.prediction_text, pred.target_change_pct);
           const actualUp = actualChangePct > 0;
           hit = predictedUp === actualUp ? 1 : 0;
         } else if (pred.prediction_type === "target" && pred.target_price !== null) {

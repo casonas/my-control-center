@@ -9,6 +9,8 @@ import type { SourceHealth, Freshness } from "@/lib/stockProviders";
 import { detectOutliers } from "@/lib/outlierEngine";
 
 const COOLDOWN_MS = 60_000;
+const RISK_OFF_THRESHOLD = -1;
+const RISK_ON_THRESHOLD = 1;
 
 export async function POST(req: Request) {
   return withMutatingAuth(req, async ({ session }) => {
@@ -86,8 +88,8 @@ export async function POST(req: Request) {
       // ── 6. regime snapshot ──────────────────────────
       const spxIdx = ir.indices.find((i) => i.symbol === "SPX");
       const ndxIdx = ir.indices.find((i) => i.symbol === "IXIC");
-      const riskMode = (spxIdx?.change_pct ?? 0) < -1 ? "risk_off"
-        : (spxIdx?.change_pct ?? 0) > 1 ? "risk_on" : "neutral";
+      const riskMode = (spxIdx?.change_pct ?? 0) < RISK_OFF_THRESHOLD ? "risk_off"
+        : (spxIdx?.change_pct ?? 0) > RISK_ON_THRESHOLD ? "risk_on" : "neutral";
       await storeRegimeSnapshot(db, userId, {
         spx_change: spxIdx?.change_pct,
         ndx_change: ndxIdx?.change_pct,

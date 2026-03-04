@@ -2136,8 +2136,8 @@ function StocksWidgets(_props: { refresh: () => void }) {
         <Card title="Predictions" icon="🔮" actions={
           metrics["30d"]?.resolved_predictions != null ? (
             <span className="text-[10px] text-zinc-400">
-              Hit: {metrics["30d"].hit_rate != null ? `${(metrics["30d"].hit_rate! * 100).toFixed(0)}%` : "—"}
-              {" · Brier: "}{metrics["30d"].avg_brier != null ? metrics["30d"].avg_brier!.toFixed(3) : "—"}
+              Hit: {metrics["30d"].hit_rate != null ? `${((metrics["30d"].hit_rate ?? 0) * 100).toFixed(0)}%` : "—"}
+              {" · Brier: "}{metrics["30d"].avg_brier != null ? (metrics["30d"].avg_brier ?? 0).toFixed(3) : "—"}
             </span>
           ) : undefined
         }>

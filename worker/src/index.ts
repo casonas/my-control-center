@@ -751,9 +751,8 @@ async function runPredictionsResolve(db: D1Database, userId: string): Promise<Jo
         if (!quote) continue;
 
         const actualChangePct = quote.change_pct || 0;
-        const predictedUp = pred.prediction_text.toLowerCase().includes("up") ||
-          pred.prediction_text.toLowerCase().includes("bull") ||
-          (pred.target_change_pct !== null && pred.target_change_pct > 0);
+        const predText = pred.prediction_text.toLowerCase();
+        const predictedUp = predText.includes("up") || predText.includes("bull") || (pred.target_change_pct !== null && pred.target_change_pct > 0);
         const hit = (pred.prediction_type === "direction")
           ? (predictedUp === (actualChangePct > 0) ? 1 : 0)
           : (pred.target_price !== null && quote.price >= pred.target_price ? 1 : 0);
