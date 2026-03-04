@@ -140,6 +140,15 @@ export default function WidgetPanel({ activeTab, onLessonClick }: { activeTab: T
 /* ═══════════════════════════════════════════════════════
    HOME  — Todoist-style command center
    ═══════════════════════════════════════════════════════ */
+/* ── types for Home v2 API responses ── */
+type HomeAction = {
+  id: string; title: string; source_type: string; priority: number;
+  urgency: string; status: string; reasoning: string | null; created_at: string;
+};
+type HomeDigest = {
+  id: string; digest_type: string; title: string; body_md: string | null; created_at: string;
+};
+
 function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
   assignments: Assignment[]; skills: Skill[]; jobs: JobPosting[]; research: ResearchArticle[]; refresh: () => void;
 }) {
@@ -147,6 +156,12 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
   const [pomodoroRunning, setPomodoroRunning] = useState(false);
   const [pomodoroMode, setPomodoroMode] = useState<"work" | "break">("work");
   const [quickTask, setQuickTask] = useState("");
+  const [commandText, setCommandText] = useState("");
+  const [commandResult, setCommandResult] = useState<string | null>(null);
+  const [actions, setActions] = useState<HomeAction[]>([]);
+  const [actionsLoading, setActionsLoading] = useState(false);
+  const [digest, setDigest] = useState<HomeDigest | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Pomodoro timer
   useEffect(() => {
@@ -165,6 +180,48 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
     return () => clearInterval(id);
   }, [pomodoroRunning, pomodoroMode]);
 
+  // Load actions + digest from API on mount
+  useEffect(() => {
+    setActionsLoading(true);
+    apiGet<{ actions: HomeAction[] }>("/home/actions")
+      .then((d) => setActions(d.actions || []))
+      .catch(() => {});
+    apiGet<{ digest: HomeDigest | null }>("/home/digest/latest")
+      .then((d) => setDigest(d.digest || null))
+      .catch(() => {});
+    setActionsLoading(false);
+  }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await apiPost("/home/refresh", {});
+      const d = await apiGet<{ actions: HomeAction[] }>("/home/actions");
+      setActions(d.actions || []);
+    } catch { /* ignore */ }
+    setRefreshing(false);
+    refresh();
+  }, [refresh]);
+
+  const handleActionUpdate = useCallback(async (id: string, status: string) => {
+    try {
+      await apiPatch(`/home/actions/${id}`, { status });
+      setActions((prev) => prev.map((a) => a.id === id ? { ...a, status } : a));
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleCommand = useCallback(async () => {
+    if (!commandText.trim()) return;
+    setCommandResult(null);
+    try {
+      const res = await apiPost<{ route: string; message: string }>("/home/route-intent", { message: commandText.trim() });
+      setCommandResult(`→ ${res.message}`);
+    } catch {
+      setCommandResult("Could not process command.");
+    }
+    setCommandText("");
+  }, [commandText]);
+
   const timerMin = String(Math.floor(pomodoroSec / 60)).padStart(2, "0");
   const timerSec = String(pomodoroSec % 60).padStart(2, "0");
 
@@ -176,24 +233,134 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 17 ? "Good afternoon" : "Good evening";
   const dateStr = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
+  const urgencyColor: Record<string, string> = {
+    critical: "rose", high: "amber", med: "cyan", low: "zinc",
+  };
+
+  const topActions = actions.filter((a) => a.status === "new" || a.status === "accepted").slice(0, 3);
+
   return (
     <div className="space-y-3">
-      {/* Welcome */}
+      {/* Welcome strip */}
       <div className="glass-light rounded-2xl p-5 animate-fade-in">
-        <div className="text-lg font-bold text-white">{greeting} 👋</div>
-        <div className="text-xs text-zinc-400 mt-1">{dateStr}</div>
-        <div className="mt-3 text-sm text-zinc-300">Your AI command center is ready. {overdue > 0 && <span className="text-rose-400">{overdue} overdue assignment{overdue > 1 ? "s" : ""}!</span>}</div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-bold text-white">{greeting} 👋</div>
+            <div className="text-xs text-zinc-400 mt-1">{dateStr}</div>
+          </div>
+          <button onClick={handleRefresh} disabled={refreshing}
+            className="text-[10px] px-2.5 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition disabled:opacity-50">
+            {refreshing ? "Refreshing…" : "⟳ Refresh"}
+          </button>
+        </div>
+        <div className="mt-3 text-sm text-zinc-300">
+          Your AI command center is ready.{" "}
+          {overdue > 0 && <span className="text-rose-400">{overdue} overdue assignment{overdue > 1 ? "s" : ""}!</span>}
+        </div>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-4 gap-2">
+      {/* KPI cards */}
+      <div className="grid grid-cols-3 gap-2">
         <StatBox icon="📝" value={assignments.filter((a) => !a.completed).length} label="Due" />
         <StatBox icon="🧠" value={`${avgProgress}%`} label="Skills" />
         <StatBox icon="💼" value={jobs.length} label="Jobs" />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
         <StatBox icon="📰" value={unread} label="Unread" />
+        <StatBox icon="📈" value="—" label="Market" />
+        <StatBox icon="🏀" value="—" label="Sports" />
       </div>
 
-      {/* Pomodoro Timer */}
+      {/* Point-Guard Panel — Top Priorities */}
+      <Card title="Top Priorities" icon="🎯" actions={
+        actionsLoading ? <span className="text-[10px] text-zinc-500">Loading…</span> : undefined
+      }>
+        {topActions.length === 0 ? (
+          <div className="text-xs text-zinc-500 py-2">No actions yet. Use Refresh to compute priorities.</div>
+        ) : (
+          <div className="space-y-1.5">
+            {topActions.map((action, i) => (
+              <div key={action.id} className="rounded-xl bg-white/5 px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs font-bold text-zinc-400">#{i + 1}</span>
+                    <span className="text-xs text-white truncate">{action.title}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Badge color={urgencyColor[action.urgency] || "zinc"}>{action.urgency}</Badge>
+                    <button onClick={() => handleActionUpdate(action.id, "accepted")}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition">✓</button>
+                    <button onClick={() => handleActionUpdate(action.id, "dismissed")}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-500/10 text-zinc-400 hover:bg-zinc-500/20 transition">✕</button>
+                  </div>
+                </div>
+                {action.reasoning && (
+                  <div className="text-[10px] text-zinc-500 mt-1 truncate">{action.reasoning}</div>
+                )}
+                <div className="flex items-center gap-2 mt-1">
+                  <Badge color="zinc">{action.source_type}</Badge>
+                  <span className="text-[10px] text-zinc-600">P{action.priority}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Cross-workspace Pulse */}
+      <Card title="Workspace Pulse" icon="📡">
+        <div className="space-y-1.5">
+          {overdue > 0 && (
+            <div className="flex items-center gap-2 rounded-xl bg-rose-500/5 border border-rose-500/10 px-3 py-2">
+              <span className="text-xs">🎓</span>
+              <span className="text-xs text-rose-300">{overdue} overdue assignment{overdue > 1 ? "s" : ""}</span>
+            </div>
+          )}
+          {jobs.length > 0 && (
+            <div className="flex items-center gap-2 rounded-xl bg-emerald-500/5 border border-emerald-500/10 px-3 py-2">
+              <span className="text-xs">💼</span>
+              <span className="text-xs text-emerald-300">{jobs.length} jobs tracked</span>
+            </div>
+          )}
+          {unread > 0 && (
+            <div className="flex items-center gap-2 rounded-xl bg-indigo-500/5 border border-indigo-500/10 px-3 py-2">
+              <span className="text-xs">📰</span>
+              <span className="text-xs text-indigo-300">{unread} unread article{unread > 1 ? "s" : ""}</span>
+            </div>
+          )}
+          {overdue === 0 && jobs.length === 0 && unread === 0 && (
+            <div className="text-xs text-zinc-500 py-1">All clear — no urgent items across workspaces.</div>
+          )}
+        </div>
+      </Card>
+
+      {/* Quick Command Box */}
+      <Card title="Quick Command" icon="💬">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-cyan-500/50 transition"
+            placeholder="Ask anything… e.g. &quot;What should I do next?&quot;"
+            value={commandText}
+            onChange={(e) => setCommandText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCommand(); }}
+          />
+          <button onClick={handleCommand}
+            className="px-3 py-2 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition">
+            →
+          </button>
+        </div>
+        {commandResult && (
+          <div className="mt-2 text-xs text-cyan-300 bg-cyan-500/5 rounded-lg px-3 py-2">{commandResult}</div>
+        )}
+        <div className="flex flex-wrap gap-1 mt-2">
+          {["Plan my day", "What's urgent?", "Show digest"].map((s) => (
+            <button key={s} onClick={() => setCommandText(s)}
+              className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-zinc-400 hover:bg-white/10 transition">{s}</button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Focus Timer */}
       <Card title="Focus Timer" icon="⏱️">
         <div className="text-center">
           <div className="text-3xl font-mono font-bold text-white mb-2">{timerMin}:{timerSec}</div>
@@ -232,21 +399,16 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
         </div>
       </Card>
 
-      {/* Quick Actions */}
-      <Card title="Quick Actions" icon="🚀">
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { icon: "📝", label: "New Note" },
-            { icon: "📅", label: "Add Due Date" },
-            { icon: "🔍", label: "Search All" },
-            { icon: "📊", label: "View Progress" },
-          ].map((a) => (
-            <button key={a.label} className="text-left rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 px-3 py-2.5 text-xs transition">
-              <span className="mr-2">{a.icon}</span>{a.label}
-            </button>
-          ))}
-        </div>
-      </Card>
+      {/* Latest Digest */}
+      {digest && (
+        <Card title={digest.title || "Latest Digest"} icon="📋">
+          <div className="text-xs text-zinc-300 whitespace-pre-wrap leading-relaxed">{digest.body_md || "No content."}</div>
+          <div className="mt-2 text-[10px] text-zinc-500">
+            <Badge color="cyan">{digest.digest_type}</Badge>
+            <span className="ml-2">{new Date(digest.created_at).toLocaleString()}</span>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -2029,6 +2191,23 @@ function NotesWidgets({ notes, refresh }: { notes: Note[]; refresh: () => void }
 /* ═══════════════════════════════════════════════════════
    SETTINGS — Preferences & connectors
    ═══════════════════════════════════════════════════════ */
+/* ── types for Settings v2 API responses ── */
+type ModeProfile = {
+  id?: string; mode_key: string; name: string; active: number; config_json?: string;
+};
+type UsageSummary = {
+  window: string; total_input_tokens: number; total_output_tokens: number;
+  total_estimated_cost: number; request_count: number;
+  by_model: { model: string; input_tokens: number; output_tokens: number; count: number }[];
+  by_scope: { feature_scope: string; input_tokens: number; output_tokens: number; count: number }[];
+};
+type ConnectorInfo = {
+  connector_key: string; status: string; last_checked_at?: string | null; details_json?: string | null;
+};
+type AuditEntry = {
+  id: string; action_type: string; before_json?: string | null; after_json?: string | null; actor: string; created_at: string;
+};
+
 function SettingsWidgets() {
   const [serviceStatus, setServiceStatus] = useState<{
     endpoints?: { name: string; status: string; latencyMs: number | null }[];
@@ -2037,6 +2216,17 @@ function SettingsWidgets() {
   } | null>(null);
   const [serviceLoading, setServiceLoading] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+
+  // Settings v2 state
+  const [modes, setModes] = useState<ModeProfile[]>([]);
+  const [activeMode, setActiveMode] = useState<string | null>(null);
+  const [modeApplying, setModeApplying] = useState(false);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [usageWindow, setUsageWindow] = useState<"day" | "week" | "month">("day");
+  const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [settingsSection, setSettingsSection] = useState<"modes" | "usage" | "connectors" | "cron" | "audit">("modes");
 
   const checkServices = useCallback(async () => {
     setServiceLoading(true);
@@ -2057,131 +2247,340 @@ function SettingsWidgets() {
     }).catch(() => {});
   }, []);
 
+  // Load modes
+  useEffect(() => {
+    apiGet<{ modes: ModeProfile[] }>("/settings/modes")
+      .then((d) => {
+        setModes(d.modes || []);
+        const active = (d.modes || []).find((m) => m.active === 1);
+        if (active) setActiveMode(active.mode_key);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Load usage when window changes
+  useEffect(() => {
+    apiGet<{ usage: UsageSummary }>(`/settings/usage?window=${usageWindow}`)
+      .then((d) => setUsage(d.usage || null))
+      .catch(() => {});
+  }, [usageWindow]);
+
+  // Load connectors
+  useEffect(() => {
+    apiGet<{ connectors: ConnectorInfo[] }>("/settings/connectors/status")
+      .then((d) => setConnectors(d.connectors || []))
+      .catch(() => {});
+  }, []);
+
+  // Load audit log
+  useEffect(() => {
+    if (settingsSection === "audit") {
+      apiGet<{ entries: AuditEntry[] }>("/settings/audit")
+        .then((d) => setAuditEntries(d.entries || []))
+        .catch(() => {});
+    }
+  }, [settingsSection]);
+
+  const applyMode = useCallback(async (modeKey: string) => {
+    setModeApplying(true);
+    try {
+      await apiPost("/settings/modes/apply", { mode_key: modeKey });
+      setActiveMode(modeKey);
+      setModes((prev) => prev.map((m) => ({ ...m, active: m.mode_key === modeKey ? 1 : 0 })));
+    } catch { /* ignore */ }
+    setModeApplying(false);
+  }, []);
+
+  const runDiagnostics = useCallback(async () => {
+    setDiagRunning(true);
+    try {
+      const res = await apiPost<{ results: ConnectorInfo[] }>("/settings/connectors/diagnostics", {});
+      setConnectors(res.results || []);
+    } catch { /* ignore */ }
+    setDiagRunning(false);
+  }, []);
+
+  const connectorStatusColor = (s: string) => {
+    if (s === "ok") return "emerald";
+    if (s === "warn") return "amber";
+    if (s === "error") return "rose";
+    return "zinc";
+  };
+
+  const modeIcons: Record<string, string> = {
+    focus: "🎯", research: "🔬", market: "📈", jobs: "💼", study: "🎓", low_cost: "💰", custom: "⚙️",
+  };
+
   return (
     <div className="space-y-3">
-      {/* ── VPS Services & Port Monitor ── */}
-      <Card title="VPS Services" icon="🔌" actions={
-        <button onClick={checkServices} disabled={serviceLoading}
-          className="text-[10px] px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 transition disabled:opacity-50">
-          {serviceLoading ? "Checking…" : "Check Status"}
-        </button>
-      }>
-        {!serviceStatus ? (
-          <div className="text-xs text-zinc-500 py-2">Click <strong>Check Status</strong> to probe VPS endpoints.</div>
-        ) : (
-          <div className="space-y-3">
-            {/* Endpoint connectivity */}
-            {serviceStatus.endpoints && (
-              <div className="space-y-1.5">
-                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Tunnel Endpoints</div>
-                {serviceStatus.endpoints.map((ep) => (
-                  <div key={ep.name} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-                    <span className="text-xs text-white">{ep.name}</span>
-                    <div className="flex items-center gap-2">
-                      {ep.latencyMs != null && <span className="text-[10px] text-zinc-500">{ep.latencyMs}ms</span>}
-                      <Badge color={ep.status === "reachable" ? "emerald" : ep.status === "not_configured" ? "zinc" : "rose"}>
-                        {ep.status === "reachable" ? "Online" : ep.status === "not_configured" ? "Not set" : "Offline"}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Port reference table */}
-            {serviceStatus.portReference && (
-              <div className="space-y-1.5">
-                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">OpenClaw Port Reference</div>
-                {serviceStatus.portReference.map((p) => (
-                  <div key={p.port} className="rounded-xl bg-white/5 px-3 py-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-white font-mono">:{p.port} <span className="text-zinc-500">{p.protocol}</span></span>
-                      <Badge color={p.required ? "emerald" : "zinc"}>{p.required ? "Required" : "Optional"}</Badge>
-                    </div>
-                    <div className="text-[10px] text-zinc-400 mt-0.5">{p.service} — {p.description}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Cleanup commands */}
-            {serviceStatus.cleanupCommands && (
-              <div className="space-y-1.5">
-                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Terminal Commands</div>
-                {serviceStatus.cleanupCommands.map((c) => (
-                  <div key={c.label} className="rounded-xl bg-white/5 px-3 py-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] text-zinc-400">{c.label}</span>
-                      <button onClick={() => copyCmd(c.command)}
-                        className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 transition">
-                        {copied === c.command ? "✓ Copied" : "Copy"}
-                      </button>
-                    </div>
-                    <code className="block text-[10px] text-cyan-400 font-mono break-all">{c.command}</code>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Card>
-
-      <Card title="Account" icon="👤">
-        <div className="space-y-2 text-xs text-zinc-300">
-          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>Session</span>
-            <Badge color="emerald">Active (180-day)</Badge>
-          </div>
-          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>CSRF Protection</span>
-            <Badge color="emerald">Enabled</Badge>
-          </div>
-          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>Storage</span>
-            <Badge color="cyan">localStorage (MVP)</Badge>
-          </div>
-        </div>
-      </Card>
-
-      <Card title="Data Connectors" icon="🔗">
-        <div className="space-y-2">
-          {[
-            { name: "RSS Feeds", type: "rss", status: "Ready" },
-            { name: "Email (IMAP)", type: "email", status: "Not configured" },
-            { name: "Calendar (ICS)", type: "calendar", status: "Not configured" },
-            { name: "OpenClaw VPS", type: "api", status: "Pending tunnel" },
-          ].map((c) => (
-            <div key={c.name} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5">
-              <span className="text-xs text-white">{c.name}</span>
-              <Badge color={c.status === "Ready" ? "emerald" : "zinc"}>{c.status}</Badge>
-            </div>
+      {/* Section Switcher */}
+      <div className="glass-light rounded-2xl p-3 animate-fade-in">
+        <div className="flex flex-wrap gap-1.5">
+          {([
+            ["modes", "🎛️ Modes"],
+            ["usage", "📊 Usage"],
+            ["connectors", "🔌 Health"],
+            ["cron", "⚡ Cron"],
+            ["audit", "📜 Audit"],
+          ] as [typeof settingsSection, string][]).map(([key, label]) => (
+            <button key={key} onClick={() => setSettingsSection(key)}
+              className={cx(
+                "text-[10px] px-2.5 py-1.5 rounded-lg font-medium transition",
+                settingsSection === key
+                  ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                  : "bg-white/5 text-zinc-400 hover:bg-white/10"
+              )}>
+              {label}
+            </button>
           ))}
         </div>
-        <div className="mt-2 text-[10px] text-zinc-500">Configure connectors in your environment variables or Cloudflare D1.</div>
-      </Card>
+      </div>
 
-      <Card title="Notifications" icon="🔔">
-        <div className="space-y-2 text-xs text-zinc-300">
-          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>In-app notifications</span>
-            <Badge color="emerald">On</Badge>
-          </div>
-          <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
-            <span>Push notifications</span>
-            <Badge color="zinc">Requires HTTPS</Badge>
-          </div>
-        </div>
-      </Card>
+      {/* ── MODES SECTION ── */}
+      {settingsSection === "modes" && (
+        <>
+          <Card title="Mode Switcher" icon="🎛️">
+            <div className="grid grid-cols-2 gap-2">
+              {modes.map((mode) => (
+                <button key={mode.mode_key} onClick={() => applyMode(mode.mode_key)}
+                  disabled={modeApplying}
+                  className={cx(
+                    "text-left rounded-xl px-3 py-2.5 text-xs transition border",
+                    activeMode === mode.mode_key
+                      ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
+                      : "bg-white/5 border-white/5 text-zinc-300 hover:bg-white/10"
+                  )}>
+                  <span className="mr-1.5">{modeIcons[mode.mode_key] || "⚙️"}</span>
+                  {mode.name}
+                  {activeMode === mode.mode_key && <Badge color="cyan">Active</Badge>}
+                </button>
+              ))}
+            </div>
+            {modes.length === 0 && (
+              <div className="text-xs text-zinc-500 py-2">Loading modes…</div>
+            )}
+          </Card>
 
-      <AutonomyPanel />
+          <Card title="Account" icon="👤">
+            <div className="space-y-2 text-xs text-zinc-300">
+              <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                <span>Session</span>
+                <Badge color="emerald">Active (180-day)</Badge>
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                <span>CSRF Protection</span>
+                <Badge color="emerald">Enabled</Badge>
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                <span>Storage</span>
+                <Badge color="cyan">Cloudflare D1</Badge>
+              </div>
+            </div>
+          </Card>
 
-      <Card title="About" icon="ℹ️">
-        <div className="text-xs text-zinc-400 space-y-1">
-          <div><strong className="text-zinc-300">My Control Center</strong> v0.1.0</div>
-          <div>Next.js 16 · Tailwind 4 · Cloudflare Pages</div>
-          <div>Open-source personal dashboard</div>
-        </div>
-      </Card>
+          <Card title="Notifications" icon="🔔">
+            <div className="space-y-2 text-xs text-zinc-300">
+              <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                <span>In-app notifications</span>
+                <Badge color="emerald">On</Badge>
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                <span>Push notifications</span>
+                <Badge color="zinc">Requires HTTPS</Badge>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="About" icon="ℹ️">
+            <div className="text-xs text-zinc-400 space-y-1">
+              <div><strong className="text-zinc-300">My Control Center</strong> v0.2.0</div>
+              <div>Next.js 15 · Tailwind 4 · Cloudflare Pages</div>
+              <div>Open-source personal dashboard</div>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {/* ── USAGE SECTION ── */}
+      {settingsSection === "usage" && (
+        <>
+          <Card title="Token Usage" icon="📊" actions={
+            <div className="flex gap-1">
+              {(["day", "week", "month"] as const).map((w) => (
+                <button key={w} onClick={() => setUsageWindow(w)}
+                  className={cx(
+                    "text-[10px] px-2 py-0.5 rounded transition",
+                    usageWindow === w ? "bg-cyan-500/20 text-cyan-400" : "bg-white/5 text-zinc-500 hover:bg-white/10"
+                  )}>
+                  {w.charAt(0).toUpperCase() + w.slice(1)}
+                </button>
+              ))}
+            </div>
+          }>
+            {!usage ? (
+              <div className="text-xs text-zinc-500 py-2">Loading usage data…</div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <StatBox icon="📥" value={usage.total_input_tokens.toLocaleString()} label="Input Tokens" />
+                  <StatBox icon="📤" value={usage.total_output_tokens.toLocaleString()} label="Output Tokens" />
+                  <StatBox icon="💵" value={`$${usage.total_estimated_cost.toFixed(4)}`} label="Est. Cost" />
+                </div>
+                <div className="text-[10px] text-zinc-500 text-center">{usage.request_count} request{usage.request_count !== 1 ? "s" : ""} this {usage.window}</div>
+
+                {usage.by_model.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">By Model</div>
+                    {usage.by_model.map((m) => (
+                      <div key={m.model} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-1.5">
+                        <span className="text-xs text-white font-mono">{m.model}</span>
+                        <span className="text-[10px] text-zinc-400">{(m.input_tokens + m.output_tokens).toLocaleString()} tok · {m.count} calls</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {usage.by_scope.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">By Feature</div>
+                    {usage.by_scope.map((s) => (
+                      <div key={s.feature_scope} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-1.5">
+                        <span className="text-xs text-white">{s.feature_scope}</span>
+                        <span className="text-[10px] text-zinc-400">{(s.input_tokens + s.output_tokens).toLocaleString()} tok · {s.count} calls</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* ── CONNECTORS / HEALTH SECTION ── */}
+      {settingsSection === "connectors" && (
+        <>
+          <Card title="Connector Health" icon="🔌" actions={
+            <button onClick={runDiagnostics} disabled={diagRunning}
+              className="text-[10px] px-2 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition disabled:opacity-50">
+              {diagRunning ? "Running…" : "Run Diagnostics"}
+            </button>
+          }>
+            <div className="space-y-1.5">
+              {connectors.map((c) => (
+                <div key={c.connector_key} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                  <div className="min-w-0">
+                    <span className="text-xs text-white font-medium">{c.connector_key.toUpperCase()}</span>
+                    {c.details_json && (
+                      <div className="text-[10px] text-zinc-500 truncate mt-0.5">{
+                        (() => { try { const d = JSON.parse(c.details_json); return d.message || d.details || c.details_json; } catch { return c.details_json; } })()
+                      }</div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {c.last_checked_at && <span className="text-[10px] text-zinc-600">{new Date(c.last_checked_at).toLocaleTimeString()}</span>}
+                    <Badge color={connectorStatusColor(c.status)}>{c.status}</Badge>
+                  </div>
+                </div>
+              ))}
+              {connectors.length === 0 && (
+                <div className="text-xs text-zinc-500 py-2">No connector data. Click Run Diagnostics.</div>
+              )}
+            </div>
+          </Card>
+
+          {/* VPS Services (existing) */}
+          <Card title="VPS Services" icon="🖥️" actions={
+            <button onClick={checkServices} disabled={serviceLoading}
+              className="text-[10px] px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 transition disabled:opacity-50">
+              {serviceLoading ? "Checking…" : "Check Status"}
+            </button>
+          }>
+            {!serviceStatus ? (
+              <div className="text-xs text-zinc-500 py-2">Click <strong>Check Status</strong> to probe VPS endpoints.</div>
+            ) : (
+              <div className="space-y-3">
+                {serviceStatus.endpoints && (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Tunnel Endpoints</div>
+                    {serviceStatus.endpoints.map((ep) => (
+                      <div key={ep.name} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+                        <span className="text-xs text-white">{ep.name}</span>
+                        <div className="flex items-center gap-2">
+                          {ep.latencyMs != null && <span className="text-[10px] text-zinc-500">{ep.latencyMs}ms</span>}
+                          <Badge color={ep.status === "reachable" ? "emerald" : ep.status === "not_configured" ? "zinc" : "rose"}>
+                            {ep.status === "reachable" ? "Online" : ep.status === "not_configured" ? "Not set" : "Offline"}
+                          </Badge>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {serviceStatus.portReference && (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">OpenClaw Port Reference</div>
+                    {serviceStatus.portReference.map((p) => (
+                      <div key={p.port} className="rounded-xl bg-white/5 px-3 py-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-white font-mono">:{p.port} <span className="text-zinc-500">{p.protocol}</span></span>
+                          <Badge color={p.required ? "emerald" : "zinc"}>{p.required ? "Required" : "Optional"}</Badge>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-0.5">{p.service} — {p.description}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {serviceStatus.cleanupCommands && (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Terminal Commands</div>
+                    {serviceStatus.cleanupCommands.map((c) => (
+                      <div key={c.label} className="rounded-xl bg-white/5 px-3 py-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-zinc-400">{c.label}</span>
+                          <button onClick={() => copyCmd(c.command)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 transition">
+                            {copied === c.command ? "✓ Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <code className="block text-[10px] text-cyan-400 font-mono break-all">{c.command}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* ── CRON SECTION ── */}
+      {settingsSection === "cron" && <AutonomyPanel />}
+
+      {/* ── AUDIT LOG SECTION ── */}
+      {settingsSection === "audit" && (
+        <Card title="Settings Audit Log" icon="📜">
+          {auditEntries.length === 0 ? (
+            <div className="text-xs text-zinc-500 py-2">No audit entries yet. Changes to modes, budgets, and model routing are logged here.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {auditEntries.map((entry) => (
+                <div key={entry.id} className="rounded-xl bg-white/5 px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-white font-medium">{entry.action_type.replace(/_/g, " ")}</span>
+                    <span className="text-[10px] text-zinc-500">{new Date(entry.created_at).toLocaleString()}</span>
+                  </div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">
+                    by {entry.actor}
+                    {entry.after_json && (
+                      <span className="ml-1 text-zinc-600">→ {(() => { try { const a = JSON.parse(entry.after_json); return typeof a === "object" ? Object.keys(a).join(", ") : String(a); } catch { return ""; } })()}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
