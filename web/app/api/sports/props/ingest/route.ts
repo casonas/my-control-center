@@ -26,8 +26,8 @@ function computeEdge(odds: number | null | undefined): number {
   // Convert American odds to implied probability, then score
   const prob =
     odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
-  // Edge = deviation from 50% (higher = more lopsided)
-  return Math.round((Math.abs(prob - 0.5) * 100) * 10) / 10;
+  // Edge = deviation from 50% (higher = more lopsided), rounded to 1 decimal
+  return parseFloat((Math.abs(prob - 0.5) * 100).toFixed(1));
 }
 
 /**

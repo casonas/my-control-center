@@ -246,7 +246,9 @@ export async function POST(req: Request) {
     }
 
     const durationMs = Date.now() - startMs;
-    const tokenEstimate = Math.round(prompt.length / 4 + JSON.stringify(picksOutput).length / 4);
+    // ~4 chars per token is a rough approximation for English text
+    const CHARS_PER_TOKEN = 4;
+    const tokenEstimate = Math.round(prompt.length / CHARS_PER_TOKEN + JSON.stringify(picksOutput).length / CHARS_PER_TOKEN);
 
     // 5. Store 3 card rows
     const cardTypes: (keyof PicksOutput)[] = ["top_plays", "safe_slip", "aggressive_slip"];

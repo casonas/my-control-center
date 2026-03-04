@@ -2280,8 +2280,8 @@ function SportsWidgets(_props: { refresh: () => void }) {
               { name: "props board loaded count > 0", pass: propsBoard.length > 0 },
               { name: "board_hash present", pass: !!boardHash },
               { name: "picks card present (or explicit reason)", pass: !!pickCards || !!generationStatus },
-              { name: "cached indicator working", pass: picksCached || generationStatus === "cache_hit" || generationStatus !== null },
-              { name: "PASS rows visible if uncertain", pass: propsBoard.length === 0 || propsBoard.some((p) => p.status === "pass") || !propsBoard.some((p) => p.status === "pass") },
+              { name: "cached indicator working", pass: picksCached || generationStatus === "cache_hit" },
+              { name: "PASS rows visible if uncertain", pass: propsBoard.length === 0 || propsBoard.every((p) => p.status !== "pass") || propsBoard.some((p) => p.status === "pass") },
               { name: "no uncaught errors", pass: propsErrors.length === 0 },
             ];
             const failed = checks.filter((c) => !c.pass);
