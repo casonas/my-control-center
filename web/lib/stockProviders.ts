@@ -473,7 +473,40 @@ export async function storeRegimeSnapshot(
 export const STOCK_NEWS_FEEDS = [
   { name: "MarketWatch", url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
   { name: "CNBC", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
+  { name: "Reuters Tech", url: "https://feeds.reuters.com/reuters/technologyNews" },
+  { name: "WSJ Markets", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
+  { name: "SEC Litigation", url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=LIT&dateb=&owner=include&count=40&search_text=&action=getcompany&RSS=1" },
 ];
+
+/** Returns false for generic/low-value headlines (market wraps, roundups, etc.) */
+export function isQualityHeadline(title: string): boolean {
+  const GENERIC_PATTERNS = [
+    /\bmarket\s*wrap\b/i,
+    /\bweekly\s*roundup\b/i,
+    /\bmorning\s*brief\b/i,
+    /\beverything\s*you\s*need\s*to\s*know\b/i,
+    /\bwhat\s*to\s*watch\s*today\b/i,
+    /\bpremarket\s*buzz\b/i,
+    /\bstock\s*futures\s*(are\s*)?(mixed|flat|little changed)\b/i,
+    /\bmarkets?\s*(close|end)\s*(higher|lower|mixed|flat)\b/i,
+    /\bhere'?s?\s*what\s*happened\b/i,
+    /\btop\s*stories\s*for\b/i,
+  ];
+  if (!title || title.length < 15) return false;
+  for (const p of GENERIC_PATTERNS) {
+    if (p.test(title)) return false;
+  }
+  return true;
+}
+
+/** Extract $TICKER mentions from text (e.g. "$AAPL gains 3%") */
+export function extractTickersFromText(text: string): string[] {
+  if (!text) return [];
+  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  if (!matches) return [];
+  const tickers = [...new Set(matches.map((m) => m.slice(1).toUpperCase()))];
+  return tickers.filter((t) => t.length >= 1 && t.length <= 5);
+}
 
 export interface NewsScanResult {
   newItems: number;
