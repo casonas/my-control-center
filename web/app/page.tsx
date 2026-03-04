@@ -435,6 +435,7 @@ export default function Home() {
     if (cached) {
       setConversationId(cached.convId);
       setMessages(cached.msgs);
+      chatSnapToBottom();
       return;
     }
     // Try to resume the most recent D1 session for this agent
@@ -448,6 +449,7 @@ export default function Home() {
           role: m.role === "user" ? "user" as const : "agent" as const,
           content: m.content,
         })));
+        chatSnapToBottom();
         return;
       }
     } catch {
