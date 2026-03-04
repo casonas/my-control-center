@@ -551,11 +551,11 @@ export async function runAcademicReminders(db: D1Database, userId: string) {
     const today = nowIso.slice(0, 10);
 
     for (const a of assignments) {
-      const dueDt = new Date(a.due_at);
+      const dueIso = a.due_at;
       let label = "";
-      if (dueDt < now) label = "overdue";
-      else if (a.due_at <= day1) label = "due_today";
-      else if (a.due_at <= day3) label = "due_3d";
+      if (dueIso < nowIso) label = "overdue";
+      else if (dueIso <= day1) label = "due_today";
+      else if (dueIso <= day3) label = "due_3d";
       else label = "due_7d";
 
       // Dedupe key: assignment_id + date + label
@@ -567,13 +567,13 @@ export async function runAcademicReminders(db: D1Database, userId: string) {
       ).bind(userId, dedupeKey).first<{ id: string }>();
       if (existing) continue;
 
-      const title = label === "overdue"
-        ? `⚠️ Overdue: ${a.title}`
-        : label === "due_today"
-          ? `🔴 Due today: ${a.title}`
-          : label === "due_3d"
-            ? `🟡 Due in 3 days: ${a.title}`
-            : `📅 Due this week: ${a.title}`;
+      const titleMap: Record<string, string> = {
+        overdue: `⚠️ Overdue: ${a.title}`,
+        due_today: `🔴 Due today: ${a.title}`,
+        due_3d: `🟡 Due in 3 days: ${a.title}`,
+        due_7d: `📅 Due this week: ${a.title}`,
+      };
+      const title = titleMap[label];
 
       try {
         await db.prepare(

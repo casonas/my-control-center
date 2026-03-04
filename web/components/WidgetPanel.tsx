@@ -417,6 +417,21 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
 /* ═══════════════════════════════════════════════════════
    SCHOOL — Notion + Blackboard + Email
    ═══════════════════════════════════════════════════════ */
+const SCHOOL_DEFAULT_RESOURCES = [
+  { id: "def-lms", category: "lms", name: "LMS Portal (Canvas/Blackboard)", url: "", notes: "" },
+  { id: "def-library", category: "library", name: "Library Portal", url: "", notes: "" },
+  { id: "def-tutoring", category: "tutoring", name: "Tutoring Center", url: "", notes: "" },
+  { id: "def-writing", category: "writing", name: "Writing Center", url: "", notes: "" },
+  { id: "def-career", category: "career", name: "Career Center", url: "", notes: "" },
+];
+const SCHOOL_AGENT_ACTIONS = [
+  { label: "Break assignment into steps", icon: "🧩" },
+  { label: "Create 5-day study plan", icon: "📅" },
+  { label: "Quiz me from this note", icon: "❓" },
+  { label: "Summarize attached file", icon: "📄" },
+];
+const SCHOOL_RES_CAT_ICONS: Record<string, string> = { lms: "🎓", library: "📚", tutoring: "👩‍🏫", writing: "✍️", career: "💼", other: "🔗" };
+
 function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refresh }: {
   assignments: Assignment[]; notes: Note[]; refresh: () => void;
 }) {
@@ -595,16 +610,7 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
   }, {});
   const calDays = Object.keys(calByDate).sort();
 
-  // Default resources if none loaded
-  const defaultResources: ApiResource[] = [
-    { id: "def-lms", category: "lms", name: "LMS Portal (Canvas/Blackboard)", url: "", notes: "" },
-    { id: "def-library", category: "library", name: "Library Portal", url: "", notes: "" },
-    { id: "def-tutoring", category: "tutoring", name: "Tutoring Center", url: "", notes: "" },
-    { id: "def-writing", category: "writing", name: "Writing Center", url: "", notes: "" },
-    { id: "def-career", category: "career", name: "Career Center", url: "", notes: "" },
-  ];
-  const displayResources = resources.length > 0 ? resources : defaultResources;
-  const resCatIcons: Record<string, string> = { lms: "🎓", library: "📚", tutoring: "👩‍🏫", writing: "✍️", career: "💼", other: "🔗" };
+  const displayResources = resources.length > 0 ? resources : SCHOOL_DEFAULT_RESOURCES;
 
   // Due-soon badge helper
   function dueBadge(dueAt: string, status: string) {
@@ -614,14 +620,6 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
     if (diff <= 7) return <Badge color="amber">Due soon</Badge>;
     return null;
   }
-
-  // Agent quick actions
-  const agentActions = [
-    { label: "Break assignment into steps", icon: "🧩" },
-    { label: "Create 5-day study plan", icon: "📅" },
-    { label: "Quiz me from this note", icon: "❓" },
-    { label: "Summarize attached file", icon: "📄" },
-  ];
 
   return (
     <div className="space-y-3">
@@ -725,7 +723,7 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
                 {(["lms", "library", "tutoring", "writing", "career", "other"] as const).map((c) => (
                   <button key={c} onClick={() => setNewResCat(c)} className={cx("px-2 py-1 rounded-lg text-[10px] border transition capitalize",
                     newResCat === c ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 border-white/5 text-zinc-400"
-                  )}>{resCatIcons[c]} {c}</button>
+                  )}>{SCHOOL_RES_CAT_ICONS[c]} {c}</button>
                 ))}
                 <button onClick={handleAddResource} className="ml-auto px-3 py-1 rounded-lg bg-violet-500/20 text-violet-400 text-[10px] font-medium hover:bg-violet-500/30 transition">Save</button>
               </div>
@@ -734,7 +732,7 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
           <div className="space-y-1.5 max-h-48 overflow-auto">
             {displayResources.map((r) => (
               <div key={r.id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
-                <span className="text-sm">{resCatIcons[r.category] || "🔗"}</span>
+                <span className="text-sm">{SCHOOL_RES_CAT_ICONS[r.category] || "🔗"}</span>
                 <div className="min-w-0 flex-1">
                   {r.url ? (
                     <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-xs text-violet-400 hover:underline truncate block">{r.name}</a>
@@ -878,10 +876,11 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
       {/* Agent Quick Actions */}
       <Card title="Study Actions" icon="🤖">
         <div className="grid grid-cols-2 gap-1.5">
-          {agentActions.map((act) => (
+          {SCHOOL_AGENT_ACTIONS.map((act) => (
             <button key={act.label}
-              className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-[10px] text-zinc-300 hover:bg-violet-500/10 hover:text-violet-400 transition text-left"
-              title={act.label}>
+              disabled
+              className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-[10px] text-zinc-300 hover:bg-violet-500/10 hover:text-violet-400 transition text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              title={`${act.label} (coming soon)`}>
               <span>{act.icon}</span>
               <span className="truncate">{act.label}</span>
             </button>
