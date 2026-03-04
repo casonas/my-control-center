@@ -9,7 +9,7 @@ import {
   getJobs, saveJob, toggleJobApplied,
   getResearch, toggleArticleRead, saveArticleNotes,
 } from "@/lib/store";
-import { apiGet, apiPost, apiPatch } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete } from "@/lib/api";
 
 /* ────────── helpers ────────── */
 function cx(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(" "); }
@@ -1163,9 +1163,11 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const [filter, setFilter] = useState("all");
   const [refreshing, setRefreshing] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   interface Game {
     id: string; home_team_name: string; away_team_name: string;
+    home_team_id: string; away_team_id: string;
     home_score?: number; away_score?: number; status: string;
     start_time: string; period?: string; clock?: string;
   }
@@ -1174,13 +1176,29 @@ function SportsWidgets(_props: { refresh: () => void }) {
     id: string; game_id: string; home_team_name?: string; away_team_name?: string;
     proj_spread_home?: number; proj_total?: number; win_prob_home?: number;
     edge_spread?: number; edge_total?: number; explanation_md?: string;
+    recommended_bet_json?: string; game_status?: string;
   }
+  interface OddsRow {
+    id: string; game_id: string; book: string;
+    spread_home?: number; spread_away?: number; total?: number;
+    moneyline_home?: number; moneyline_away?: number;
+    home_team_name?: string; away_team_name?: string; asof?: string;
+  }
+  interface NewsItem {
+    id: string; title: string; source: string; url: string;
+    published_at?: string; league: string; team_id?: string;
+    rumor_flag?: number; summary?: string;
+  }
+  interface SourceHealth { ok: boolean; items: number; error?: string }
 
   const [games, setGames] = useState<Game[]>([]);
   const [watchlist, setWatchlist] = useState<WlTeam[]>([]);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [odds, setOdds] = useState<OddsRow[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
   const [addTeam, setAddTeam] = useState("");
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
+  const [sourceHealth, setSourceHealth] = useState<Record<string, SourceHealth>>({});
 
   const loadGames = useCallback(async () => {
     try {
@@ -1203,14 +1221,35 @@ function SportsWidgets(_props: { refresh: () => void }) {
     } catch { /* */ }
   }, [league]);
 
-  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); }, [loadGames, loadWatchlist, loadPredictions]);
+  const loadOdds = useCallback(async () => {
+    try {
+      const d = await apiGet<{ odds: OddsRow[] }>(`/sports/odds?league=${league}`);
+      setOdds(d.odds || []);
+    } catch { /* */ }
+  }, [league]);
+
+  const loadNews = useCallback(async () => {
+    try {
+      const d = await apiGet<{ news: NewsItem[] }>(`/sports/news?league=${league}`);
+      setNews(d.news || []);
+    } catch { /* */ }
+  }, [league]);
+
+  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews]);
 
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
     try {
-      const d = await apiPost<{ ok: boolean; games?: number; error?: string; source?: string }>("/sports/refresh", { league });
-      setStatusMsg(d.ok ? `Refreshed (${d.source || "done"})` : (d.error || "Failed"));
-      loadGames();
+      const d = await apiPost<{ ok: boolean; games?: number; odds?: number; news?: number; predictions?: number; error?: string; source?: string; sourceHealth?: Record<string, SourceHealth> }>("/sports/refresh", { league });
+      if (d.sourceHealth) setSourceHealth(d.sourceHealth);
+      const parts: string[] = [];
+      if (d.games) parts.push(`${d.games} games`);
+      if (d.odds) parts.push(`${d.odds} odds`);
+      if (d.news) parts.push(`${d.news} news`);
+      if (d.predictions) parts.push(`${d.predictions} picks`);
+      setStatusMsg(d.ok ? (parts.length > 0 ? parts.join(", ") : "No new data") : (d.error || "Failed"));
+      setLastUpdated(new Date().toLocaleTimeString());
+      loadGames(); loadOdds(); loadNews(); loadPredictions();
     } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
     finally { setRefreshing(false); }
   }
@@ -1225,8 +1264,28 @@ function SportsWidgets(_props: { refresh: () => void }) {
     } catch { /* */ }
   }
 
+  async function handleRemoveTeam(teamId: string) {
+    try {
+      await apiDelete("/sports/watchlist", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ league, teamId }) });
+      loadWatchlist();
+    } catch { /* */ }
+  }
+
   const activeGame = games.find((g) => g.id === activeGameId);
   const activePred = predictions.find((p) => p.game_id === activeGameId);
+  const activeOdds = odds.filter((o) => o.game_id === activeGameId);
+
+  // Top edges: predictions with meaningful edge, sorted by |edge_spread| desc
+  const topEdges = predictions
+    .filter((p) => (Math.abs(p.edge_spread || 0) >= 3 || Math.abs(p.edge_total || 0) >= 3) && p.game_status !== "final")
+    .sort((a, b) => Math.abs(b.edge_spread || 0) - Math.abs(a.edge_spread || 0))
+    .slice(0, 8);
+
+  // Source health badges
+  const espnOk = sourceHealth.espn?.ok !== false;
+  const oddsOk = sourceHealth["the-odds-api"]?.ok !== false;
+  const newsOk = sourceHealth.rss?.ok !== false;
+  const oddsUnavailable = sourceHealth["the-odds-api"]?.ok === false;
 
   return (
     <div className="space-y-3">
@@ -1240,6 +1299,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
         ))}
       </div>
 
+      {/* Controls + source health */}
       <div className="flex items-center gap-2 flex-wrap">
         <button onClick={handleRefresh} disabled={refreshing}
           className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 disabled:opacity-50 transition">
@@ -1251,15 +1311,29 @@ function SportsWidgets(_props: { refresh: () => void }) {
             filter === f ? "bg-rose-500/20 text-rose-400 border-rose-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
           )}>{f}</button>
         ))}
+        {lastUpdated && <span className="text-[9px] text-zinc-500">Updated {lastUpdated}</span>}
         {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
-      <AgentStatus verb="fetching live scores" />
+      {/* Source health indicators */}
+      {Object.keys(sourceHealth).length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full", espnOk ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
+            ESPN {espnOk ? "✓" : "✗"}
+          </span>
+          <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full", oddsOk ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400")}>
+            Odds {oddsOk ? "✓" : "unavailable"}
+          </span>
+          <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full", newsOk ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
+            News {newsOk ? "✓" : "✗"}
+          </span>
+        </div>
+      )}
 
       {/* Scores */}
       <Card title="Scores" icon="🏆">
         {games.length === 0 ? (
-          <EmptyState icon="🏟️" text={`No ${league.toUpperCase()} games. Click Refresh or connect a sports data provider.`} />
+          <EmptyState icon="🏟️" text={!espnOk ? `ESPN data unavailable. Click Refresh to retry.` : `No ${league.toUpperCase()} games. Click Refresh to fetch.`} />
         ) : (
           <div className="space-y-2 max-h-64 overflow-auto">
             {games.map((g) => (
@@ -1287,8 +1361,42 @@ function SportsWidgets(_props: { refresh: () => void }) {
         )}
       </Card>
 
-      {/* Projections & Odds — shows for active game */}
-      <Card title="Projections & Odds" icon="📊">
+      {/* Odds panel */}
+      <Card title="Odds" icon="📊" actions={oddsUnavailable ? <span className="text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded-full">odds unavailable</span> : undefined}>
+        {activeGame && activeOdds.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+            <div className="space-y-1.5">
+              {activeOdds.slice(0, 5).map((o) => (
+                <div key={o.id} className="grid grid-cols-4 gap-1 text-[10px] rounded-lg bg-white/5 p-2">
+                  <div className="text-zinc-400 font-medium">{o.book}</div>
+                  <div className="text-center">
+                    <div className="text-zinc-500">Spread</div>
+                    <div className="text-white">{o.spread_home != null ? (o.spread_home > 0 ? "+" : "") + o.spread_home : "—"}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-zinc-500">Total</div>
+                    <div className="text-white">{o.total != null ? `O/U ${o.total}` : "—"}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-zinc-500">ML</div>
+                    <div className="text-white">{o.moneyline_home != null ? (o.moneyline_home > 0 ? "+" : "") + o.moneyline_home : "—"}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : activeGame ? (
+          <div className="text-[10px] text-zinc-400">
+            {oddsUnavailable ? "Odds provider not configured. Set THE_ODDS_API_KEY for odds data." : "No odds available for this game yet. Click Refresh."}
+          </div>
+        ) : (
+          <div className="text-[10px] text-zinc-400">Select a game above to view odds.</div>
+        )}
+      </Card>
+
+      {/* Projections for active game */}
+      <Card title="Projections" icon="🎯">
         {activeGame && activePred ? (
           <div className="space-y-2">
             <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
@@ -1323,16 +1431,72 @@ function SportsWidgets(_props: { refresh: () => void }) {
             {activePred.explanation_md && <div className="text-[10px] text-zinc-400 mt-1">{activePred.explanation_md}</div>}
           </div>
         ) : activeGame ? (
-          <div className="space-y-2">
-            <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
-            <div className="text-[10px] text-zinc-400">Model projections not generated yet.</div>
-            <button onClick={() => apiPost("/sports/predictions", { league }).catch(() => {})}
-              className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium hover:bg-rose-500/30 transition">
-              Generate Projections →
-            </button>
+          <div className="text-[10px] text-zinc-400">No projections yet. Projections generate during refresh when odds are available.</div>
+        ) : (
+          <div className="text-[10px] text-zinc-400">Select a game above to view projections.</div>
+        )}
+      </Card>
+
+      {/* Top Edges — Betting Analyst */}
+      <Card title="Top Edges" icon="🔥">
+        {topEdges.length > 0 ? (
+          <div className="space-y-2 max-h-48 overflow-auto">
+            {topEdges.map((p) => {
+              let rec: { type?: string; side?: string; edge?: string; risk?: string } = {};
+              try { rec = JSON.parse(p.recommended_bet_json || "{}"); } catch { /* */ }
+              return (
+                <div key={p.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-white font-semibold">{p.away_team_name} @ {p.home_team_name}</div>
+                    <div className="flex items-center gap-1.5">
+                      {p.edge_spread != null && (
+                        <span className={cx("text-[10px] font-bold px-1.5 py-0.5 rounded-full",
+                          Math.abs(p.edge_spread) >= 5 ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
+                        )}>
+                          {p.edge_spread > 0 ? "+" : ""}{p.edge_spread.toFixed(1)}
+                        </span>
+                      )}
+                      {rec.risk && (
+                        <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full",
+                          rec.risk === "low" ? "bg-emerald-500/10 text-emerald-400" :
+                          rec.risk === "medium" ? "bg-amber-500/10 text-amber-400" :
+                          "bg-red-500/10 text-red-400"
+                        )}>{rec.risk}</span>
+                      )}
+                    </div>
+                  </div>
+                  {rec.side && <div className="text-[10px] text-zinc-300 mt-1">📌 {rec.side} ({rec.type}) — edge {rec.edge}</div>}
+                  {p.explanation_md && <div className="text-[9px] text-zinc-500 mt-0.5 line-clamp-2">{p.explanation_md}</div>}
+                </div>
+              );
+            })}
           </div>
         ) : (
-          <div className="text-[10px] text-zinc-400">Select a game above to view projections and odds.</div>
+          <EmptyState icon="🎲" text="No edges found. Refresh to analyze games with available odds." />
+        )}
+      </Card>
+
+      {/* News + Rumors */}
+      <Card title="News & Rumors" icon="📰">
+        {news.length > 0 ? (
+          <div className="space-y-1.5 max-h-48 overflow-auto">
+            {news.slice(0, 15).map((n) => (
+              <a key={n.id} href={n.url} target="_blank" rel="noopener noreferrer"
+                className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] text-white font-medium leading-tight truncate">{n.title}</div>
+                    <div className="text-[9px] text-zinc-500 mt-0.5">{n.source} {n.published_at ? `· ${new Date(n.published_at).toLocaleDateString()}` : ""}</div>
+                  </div>
+                  {n.rumor_flag === 1 && (
+                    <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400">rumor</span>
+                  )}
+                </div>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <EmptyState icon="📰" text={!newsOk ? "News feed unavailable. Cached items shown when available." : "No news yet. Click Refresh to fetch headlines."} />
         )}
       </Card>
 
@@ -1350,7 +1514,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
           {watchlist.map((team) => (
             <div key={team.team_id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
               <span className="text-xs text-white">{team.team_name}</span>
-              <span className="text-[10px] text-zinc-500">⭐ Tracking</span>
+              <button onClick={() => handleRemoveTeam(team.team_id)} className="text-[10px] text-zinc-500 hover:text-red-400 transition" title="Remove">✕</button>
             </div>
           ))}
         </div>

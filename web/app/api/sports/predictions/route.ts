@@ -9,22 +9,32 @@ export async function GET(req: Request) {
     if (!db) return Response.json({ predictions: [] });
     const url = new URL(req.url);
     const league = url.searchParams.get("league") || "nba";
+    const minEdge = parseFloat(url.searchParams.get("minEdge") || "0");
     try {
       const r = await db.prepare(
-        `SELECT p.*, g.home_team_name, g.away_team_name, g.start_time
+        `SELECT p.*, g.home_team_name, g.away_team_name, g.start_time, g.status as game_status
          FROM sports_model_predictions p
          JOIN sports_games g ON p.game_id = g.id
          WHERE p.user_id = ? AND g.league = ?
          ORDER BY p.generated_at DESC LIMIT 50`
       ).bind(userId, league).all();
-      return Response.json({ predictions: r.results || [] });
+
+      let predictions = r.results || [];
+      if (minEdge > 0) {
+        predictions = predictions.filter((p: Record<string, unknown>) => {
+          const es = Math.abs(Number(p.edge_spread) || 0);
+          const et = Math.abs(Number(p.edge_total) || 0);
+          return es >= minEdge || et >= minEdge;
+        });
+      }
+
+      return Response.json({ predictions });
     } catch { return Response.json({ predictions: [] }); }
   });
 }
 
 export async function POST(req: Request) {
   return withMutatingAuth(req, async () => {
-    // MVP: stub — triggers VPS/OpenClaw sports betting agent
-    return Response.json({ ok: true, note: "Prediction generation triggered. The sports agent will analyze upcoming games." });
+    return Response.json({ ok: true, note: "Predictions are generated automatically during refresh. Use POST /api/sports/refresh to trigger." });
   });
 }

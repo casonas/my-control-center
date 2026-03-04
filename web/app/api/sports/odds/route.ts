@@ -8,14 +8,26 @@ export async function GET(req: Request) {
     if (!db) return Response.json({ odds: [] });
     const url = new URL(req.url);
     const league = url.searchParams.get("league") || "nba";
+    const gameId = url.searchParams.get("gameId");
     try {
-      const r = await db.prepare(
-        `SELECT o.*, g.home_team_name, g.away_team_name, g.start_time
-         FROM sports_odds_market o
-         JOIN sports_games g ON o.game_id = g.id
-         WHERE o.user_id = ? AND g.league = ?
-         ORDER BY o.asof DESC LIMIT 50`
-      ).bind(userId, league).all();
+      let r;
+      if (gameId) {
+        r = await db.prepare(
+          `SELECT o.*, g.home_team_name, g.away_team_name, g.start_time
+           FROM sports_odds_market o
+           JOIN sports_games g ON o.game_id = g.id
+           WHERE o.user_id = ? AND o.game_id = ?
+           ORDER BY o.asof DESC LIMIT 20`
+        ).bind(userId, gameId).all();
+      } else {
+        r = await db.prepare(
+          `SELECT o.*, g.home_team_name, g.away_team_name, g.start_time
+           FROM sports_odds_market o
+           JOIN sports_games g ON o.game_id = g.id
+           WHERE o.user_id = ? AND g.league = ?
+           ORDER BY o.asof DESC LIMIT 50`
+        ).bind(userId, league).all();
+      }
       return Response.json({ odds: r.results || [] });
     } catch { return Response.json({ odds: [] }); }
   });

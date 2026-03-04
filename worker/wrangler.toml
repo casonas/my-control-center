@@ -15,12 +15,14 @@ binding = "DB"
 database_name = "mcc-store"
 database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"
 
-# ─── Cron Triggers (5 expressions) ───
-# These run the scheduled() handler at the specified times.
+# ─── Cron Triggers (5 expressions — fan-out dispatcher) ───
+# Each trigger fans out to multiple sub-jobs via FANOUT_MAP in index.ts.
+# Sub-jobs have per-subjob timeout, failure isolation, and individual
+# cron_runs logging as "pulse:<subjob_name>_<userId>".
 # Adjust frequencies to stay within free-tier limits (100k req/day).
 [triggers]
 crons = [
-  "*/10 * * * *",        # Every 10 min: stocks_refresh, sports_refresh_nba
+  "*/10 * * * *",        # Every 10 min: stocks_refresh, sports_refresh_{nba,nfl,mlb,nhl}
   "0 * * * *",           # Hourly: research_scan, stocks_news_scan
   "0 */3 * * *",         # Every 3 hours: industry_radar_refresh
   "0 6 * * *",           # Daily 6am UTC: lesson_plan_refresh, skills_radar_scan, memory_summarize

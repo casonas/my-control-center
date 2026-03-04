@@ -54,13 +54,20 @@ export function useChatScroll() {
   }, []);
 
   // ── Scroll to bottom instantly (for initial load / agent switch) ──
+  // Uses rAF so the DOM has rendered new messages before we measure scrollHeight.
   const snapToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    atBottomRef.current = true;
-    setAtBottom(true);
-    setUnreadCount(0);
+    const snap = () => {
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+      atBottomRef.current = true;
+      setAtBottom(true);
+      setUnreadCount(0);
+    };
+    // Immediate attempt (covers already-rendered content)
+    snap();
+    // Post-render pass to catch React-batched state updates
+    requestAnimationFrame(snap);
   }, []);
 
   // ── Call when a new assistant message bubble is created ──
