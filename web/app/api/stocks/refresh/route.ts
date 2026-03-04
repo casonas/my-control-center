@@ -70,20 +70,19 @@ export async function POST(req: Request) {
       const qr = await provider.fetchQuotes(tickers);
       sourceHealth.push(qr.health);
 
-      // Determine actual data source for freshness label
-      const quoteSource = qr.quotes.length > 0
-        ? (qr.quotes[0].source || qr.health.name)
-        : "d1-cache";
+      let quoteSource: string;
 
       if (qr.quotes.length > 0) {
         await storeQuotes(db, userId, qr.quotes);
         quotesStored = qr.quotes.length;
+        quoteSource = qr.quotes[0].source || qr.health.name;
         freshness = buildFreshness(now, quoteSource);
       } else {
         // API failed → serve stale D1 cache (never emit zeros)
         const cached = await loadCachedQuotes(db, userId);
         quotesStored = cached.quotes.length;
         freshness = cached.freshness;
+        quoteSource = "d1-cache";
         staleFallbackUsed = true;
       }
 

@@ -256,7 +256,7 @@ export class StockIntelProvider {
       }
       // Yahoo returned data but parsed 0 valid quotes
       if (quotes.length === 0) {
-        yahooError = `Yahoo returned 0 valid quotes (raw results: ${results.length}, symbols: ${symbols})`;
+        yahooError = `Yahoo returned 0 valid quotes (raw results: ${results.length}, symbols: ${symbols.slice(0, 200)})`;
       }
     } catch (err) {
       yahooError = `Yahoo fetch failed: ${err instanceof Error ? err.message : String(err)}`;
