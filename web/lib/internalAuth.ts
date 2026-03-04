@@ -1,7 +1,9 @@
 // web/lib/internalAuth.ts — Validates X-Internal-Token header for VPS/runner endpoints
 
 export function requireInternalAuth(req: Request): void {
-  const secret = process.env.INTERNAL_SHARED_SECRET;
+  const secret = 
+    process.env.INTERNAL_SHARED_SECRET ??
+    process.env.CRON_SECRET;
   if (!secret) {
     throw new InternalAuthError("INTERNAL_SHARED_SECRET not configured");
   }
