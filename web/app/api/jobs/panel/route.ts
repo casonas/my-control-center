@@ -10,7 +10,8 @@ export async function GET(req: Request) {
   const offset = url.searchParams.get("offset") || "0";
   const status = url.searchParams.get("status") || "";
 
-  const apiUrl = new URL("https://jobs-api.my-control-center.com/jobs/panel");
+  const baseUrl = process.env.JOBS_API_URL || "https://jobs-api.my-control-center.com";
+  const apiUrl = new URL(`${baseUrl}/jobs/panel`);
   apiUrl.searchParams.set("limit", limit);
   apiUrl.searchParams.set("offset", offset);
   if (status) apiUrl.searchParams.set("status", status);

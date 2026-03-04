@@ -54,15 +54,31 @@ function StatCard({
   icon: string;
   color: string;
 }) {
+  const borderMap: Record<string, string> = {
+    indigo: "border-indigo-500/20",
+    emerald: "border-emerald-500/20",
+    cyan: "border-cyan-500/20",
+    violet: "border-violet-500/20",
+    amber: "border-amber-500/20",
+    rose: "border-rose-500/20",
+  };
+  const textMap: Record<string, string> = {
+    indigo: "text-indigo-400",
+    emerald: "text-emerald-400",
+    cyan: "text-cyan-400",
+    violet: "text-violet-400",
+    amber: "text-amber-400",
+    rose: "text-rose-400",
+  };
   return (
     <div
       className={cx(
-        "glass-light rounded-2xl p-5 text-center animate-fade-in",
-        `border border-${color}-500/20`,
+        "glass-light rounded-2xl p-5 text-center animate-fade-in border",
+        borderMap[color] || "border-zinc-500/20",
       )}
     >
       <div className="text-2xl mb-1">{icon}</div>
-      <div className={cx("text-2xl font-bold", `text-${color}-400`)}>{value}</div>
+      <div className={cx("text-2xl font-bold", textMap[color] || "text-zinc-400")}>{value}</div>
       <div className="text-xs text-zinc-400 mt-1">{label}</div>
     </div>
   );

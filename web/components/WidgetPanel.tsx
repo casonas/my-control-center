@@ -2615,7 +2615,7 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
   // 2e. Skill Gap Detector: extract tools/tech from feed not in user's skills
   const TECH_PATTERNS = [
     /\b(kubernetes|k8s)\b/i, /\b(docker|containers?)\b/i, /\b(terraform)\b/i,
-    /\b(ansible)\b/i, /\b(python)\b/i, /\b(rust)\b/i, /\b(golang|go\s+lang)\b/i,
+    /\b(ansible)\b/i, /\b(python)\b/i, /\b(rust)\b/i, /\b(golang)\b/i,
     /\b(aws|azure|gcp)\b/i, /\b(wireshark)\b/i, /\b(burp\s*suite)\b/i,
     /\b(nmap)\b/i, /\b(metasploit)\b/i, /\b(splunk)\b/i, /\b(sentinel)\b/i,
     /\b(crowdstrike)\b/i, /\b(ghidra)\b/i, /\b(ida\s*pro)\b/i,

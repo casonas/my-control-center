@@ -502,7 +502,7 @@ export function isQualityHeadline(title: string): boolean {
 /** Extract $TICKER mentions from text (e.g. "$AAPL gains 3%") */
 export function extractTickersFromText(text: string): string[] {
   if (!text) return [];
-  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  const matches = text.match(/\$([A-Za-z]{1,5})\b/g);
   if (!matches) return [];
   const tickers = [...new Set(matches.map((m) => m.slice(1).toUpperCase()))];
   return tickers.filter((t) => t.length >= 1 && t.length <= 5);
