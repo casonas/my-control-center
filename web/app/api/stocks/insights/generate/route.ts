@@ -86,27 +86,32 @@ export async function POST(req: Request) {
         Math.round(30 + newsItems.length * 5 + outlierItems.length * 8),
       );
 
-      // 5. Insert into stock_insights
+      // 5. Insert into stock_insights (with schema fallback)
       const insightId = crypto.randomUUID();
       const now = new Date().toISOString();
       const title = `Market Briefing — ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 
-      await db
-        .prepare(
-          `INSERT INTO stock_insights
-           (id, user_id, ticker, title, bullets_json, sentiment, confidence, created_at, scope, insight_type)
-           VALUES (?, ?, 'ALL', ?, ?, ?, ?, ?, 'market', 'briefing')`,
-        )
-        .bind(
-          insightId,
-          userId,
-          title,
-          JSON.stringify(bullets),
-          sentimentLabel,
-          confidence,
-          now,
-        )
-        .run();
+      try {
+        // Try new schema with scope/insight_type columns
+        await db
+          .prepare(
+            `INSERT INTO stock_insights
+             (id, user_id, ticker, title, bullets_json, sentiment, confidence, created_at, scope, insight_type)
+             VALUES (?, ?, 'ALL', ?, ?, ?, ?, ?, 'market', 'briefing')`,
+          )
+          .bind(insightId, userId, title, JSON.stringify(bullets), sentimentLabel, confidence, now)
+          .run();
+      } catch {
+        // Fallback: table may lack scope/insight_type columns
+        await db
+          .prepare(
+            `INSERT INTO stock_insights
+             (id, user_id, ticker, title, bullets_json, sentiment, confidence, created_at)
+             VALUES (?, ?, 'ALL', ?, ?, ?, ?, ?)`,
+          )
+          .bind(insightId, userId, title, JSON.stringify(bullets), sentimentLabel, confidence, now)
+          .run();
+      }
 
       // 6. Return results
       return Response.json({
