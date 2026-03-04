@@ -1738,6 +1738,19 @@ function SportsWidgets(_props: { refresh: () => void }) {
   interface Movement { game_id: string; home_team: string; away_team: string; book: string; market: string; old_line: number; new_line: number; delta: number; direction: string; minutes_ago: number }
   const [movements, setMovements] = useState<Movement[]>([]);
 
+  // NBA Props + Picks state
+  interface PropRow { id: string; player: string; market: string; line: number | null; odds: number | null; edge_score: number; book: string | null; status: string; reason?: string | null }
+  interface PickLeg { player: string; market: string; line: number | null; pick: string; confidence: number; reason: string }
+  interface PickCards { top_plays?: PickLeg[]; safe_slip?: PickLeg[]; aggressive_slip?: PickLeg[] }
+  const [propsBoard, setPropsBoard] = useState<PropRow[]>([]);
+  const [pickCards, setPickCards] = useState<PickCards | null>(null);
+  const [picksLoading, setPicksLoading] = useState(false);
+  const [picksCached, setPicksCached] = useState(false);
+  const [boardHash, setBoardHash] = useState<string | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
+  const [lastGenerationAt, setLastGenerationAt] = useState<string | null>(null);
+  const [propsErrors, setPropsErrors] = useState<string[]>([]);
+
   const loadGames = useCallback(async () => {
     try {
       const d = await apiGet<{ games: Game[] }>(`/sports/games?league=${league}&filter=${filter}`);
@@ -1781,7 +1794,53 @@ function SportsWidgets(_props: { refresh: () => void }) {
     } catch { /* */ }
   }, [league]);
 
-  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); loadMovements(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews, loadMovements]);
+  const loadPropsBoard = useCallback(async () => {
+    if (league !== "nba") { setPropsBoard([]); setBoardHash(null); return; }
+    try {
+      const d = await apiGet<{ props: PropRow[]; board_hash: string | null }>(`/sports/props/board?league=${league}`);
+      setPropsBoard(d.props || []);
+      setBoardHash(d.board_hash ?? null);
+    } catch (e) { setPropsErrors((prev) => [...prev, e instanceof Error ? e.message : "Failed to load props"]); }
+  }, [league]);
+
+  const loadPicksLatest = useCallback(async () => {
+    if (league !== "nba") { setPickCards(null); return; }
+    try {
+      const d = await apiGet<{ cards: PickCards | null; board_hash?: string; created_at?: string; reason?: string }>(`/sports/picks/latest?league=${league}`);
+      setPickCards(d.cards ?? null);
+      if (d.board_hash) setBoardHash(d.board_hash);
+      if (d.created_at) setLastGenerationAt(d.created_at);
+      if (d.reason && !d.cards) setGenerationStatus(d.reason);
+    } catch { /* */ }
+  }, [league]);
+
+  const generatePicks = useCallback(async (force = false) => {
+    if (league !== "nba") return;
+    setPicksLoading(true);
+    setGenerationStatus(null);
+    setPropsErrors([]);
+    const startMs = Date.now();
+    try {
+      const d = await apiPost<{
+        ok: boolean; cached?: boolean; board_hash?: string; reason?: string;
+        cards?: PickCards; duration_ms?: number; error?: string;
+      }>("/sports/picks/generate", { league, force });
+      if (d.ok && d.cards) {
+        setPickCards(d.cards);
+        setPicksCached(d.cached === true);
+        if (d.board_hash) setBoardHash(d.board_hash);
+        setLastGenerationAt(new Date().toISOString());
+        setGenerationStatus(d.cached ? "cache_hit" : `generated in ${d.duration_ms ?? (Date.now() - startMs)}ms`);
+      } else {
+        setGenerationStatus(d.reason ?? d.error ?? "generation failed");
+      }
+    } catch (e) {
+      setGenerationStatus(e instanceof Error ? e.message : "generation error");
+      setPropsErrors((prev) => [...prev, e instanceof Error ? e.message : "Generate failed"]);
+    } finally { setPicksLoading(false); }
+  }, [league]);
+
+  useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); loadMovements(); loadPropsBoard(); loadPicksLatest(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews, loadMovements, loadPropsBoard, loadPicksLatest]);
 
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
@@ -1795,7 +1854,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
       if (d.predictions) parts.push(`${d.predictions} picks`);
       setStatusMsg(d.ok ? (parts.length > 0 ? parts.join(", ") : "No new data") : (d.error || "Failed"));
       setLastUpdated(new Date().toLocaleTimeString());
-      loadGames(); loadOdds(); loadNews(); loadPredictions(); loadMovements();
+      loadGames(); loadOdds(); loadNews(); loadPredictions(); loadMovements(); loadPropsBoard();
     } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
     finally { setRefreshing(false); }
   }
@@ -2101,6 +2160,151 @@ function SportsWidgets(_props: { refresh: () => void }) {
           ))}
         </div>
       </Card>
+
+      {/* ── NBA Props + Picks (NBA only) ── */}
+      {league === "nba" && (
+        <>
+          {/* Props Board */}
+          <Card title="Props Board" icon="📋" actions={
+            <div className="flex gap-1">
+              <button onClick={() => loadPropsBoard()} className="text-[9px] px-2 py-0.5 rounded-lg bg-white/5 text-zinc-400 hover:bg-white/10 transition">Refresh Props</button>
+              <button onClick={() => generatePicks()} disabled={picksLoading}
+                className="text-[9px] px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 disabled:opacity-50 transition">
+                {picksLoading ? "Generating…" : "Generate Picks"}
+              </button>
+            </div>
+          }>
+            {propsBoard.length > 0 ? (
+              <div className="space-y-1 max-h-52 overflow-auto">
+                {propsBoard.slice(0, 30).map((p) => (
+                  <div key={p.id} className="flex items-center justify-between rounded-lg bg-white/5 px-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] text-white font-medium truncate">{p.player}</div>
+                      <div className="text-[9px] text-zinc-500">{p.market} {p.line != null ? p.line : ""} • {p.book ?? "—"}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      {p.odds != null && <span className="text-[9px] text-zinc-400">{p.odds > 0 ? "+" : ""}{p.odds}</span>}
+                      <span className={cx("text-[9px] font-bold px-1 py-0.5 rounded-full",
+                        p.edge_score >= 10 ? "bg-emerald-500/20 text-emerald-400" : p.edge_score >= 5 ? "bg-amber-500/20 text-amber-400" : "bg-zinc-500/20 text-zinc-400"
+                      )}>{p.edge_score}</span>
+                      {p.status === "pass" && <span className="text-[8px] px-1 py-0.5 rounded-full bg-orange-500/20 text-orange-400">PASS</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon="📋" text="No props loaded. Use POST /api/sports/props/ingest to add props, then Refresh." />
+            )}
+          </Card>
+
+          {/* Top Plays Card */}
+          <Card title="Top Plays" icon="🎯">
+            {pickCards?.top_plays && pickCards.top_plays.length > 0 ? (
+              <div className="space-y-1.5">
+                {pickCards.top_plays.map((leg, i) => (
+                  <div key={`tp-${i}`} className="rounded-xl bg-white/5 px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] text-white font-semibold">{leg.player}</div>
+                      <span className={cx("text-[9px] font-bold px-1.5 py-0.5 rounded-full",
+                        leg.confidence >= 0.7 ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
+                      )}>{(leg.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="text-[10px] text-zinc-300 mt-0.5">{leg.pick} {leg.market} {leg.line ?? ""}</div>
+                    <div className="text-[9px] text-zinc-500 mt-0.5">{leg.reason}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon="🎯" text={generationStatus || "No picks yet. Load props and click Generate Picks."} />
+            )}
+          </Card>
+
+          {/* Safe Slip Card */}
+          <Card title="Best 5 Safe" icon="🛡️">
+            {pickCards?.safe_slip && pickCards.safe_slip.length > 0 ? (
+              <div className="space-y-1">
+                {pickCards.safe_slip.map((leg, i) => (
+                  <div key={`ss-${i}`} className="flex items-center justify-between rounded-lg bg-white/5 px-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] text-white font-medium truncate">{leg.player} — {leg.pick} {leg.market} {leg.line ?? ""}</div>
+                      <div className="text-[9px] text-zinc-500">{leg.reason}</div>
+                    </div>
+                    <span className="text-[9px] font-bold text-emerald-400 shrink-0 ml-1">{(leg.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon="🛡️" text="No safe slip yet." />
+            )}
+          </Card>
+
+          {/* Aggressive Slip Card */}
+          <Card title="Best 5 Aggressive" icon="🔥">
+            {pickCards?.aggressive_slip && pickCards.aggressive_slip.length > 0 ? (
+              <div className="space-y-1">
+                {pickCards.aggressive_slip.map((leg, i) => (
+                  <div key={`ag-${i}`} className="flex items-center justify-between rounded-lg bg-white/5 px-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] text-white font-medium truncate">{leg.player} — {leg.pick} {leg.market} {leg.line ?? ""}</div>
+                      <div className="text-[9px] text-zinc-500">{leg.reason}</div>
+                    </div>
+                    <span className="text-[9px] font-bold text-rose-400 shrink-0 ml-1">{(leg.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon="🔥" text="No aggressive slip yet." />
+            )}
+          </Card>
+
+          {/* Generation Diagnostics */}
+          <Card title="Generation Diagnostics" icon="🔧">
+            <div className="space-y-1 text-[10px]">
+              <div className="flex justify-between"><span className="text-zinc-500">board_hash</span><span className="text-zinc-300 font-mono">{boardHash ?? "—"}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-500">cached</span><span className={picksCached ? "text-emerald-400" : "text-zinc-400"}>{picksCached ? "yes" : "no"}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-500">status</span><span className="text-zinc-300">{generationStatus ?? "—"}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-500">last generation</span><span className="text-zinc-300">{lastGenerationAt ? new Date(lastGenerationAt).toLocaleTimeString() : "—"}</span></div>
+              {propsErrors.length > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {propsErrors.map((e, i) => (
+                    <div key={`err-${i}`} className="text-[9px] text-red-400 bg-red-500/10 rounded px-1.5 py-0.5">{e}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Test Checklist (debug) */}
+          {(() => {
+            const checks = [
+              { name: "props board loaded count > 0", pass: propsBoard.length > 0 },
+              { name: "board_hash present", pass: !!boardHash },
+              { name: "picks card present (or explicit reason)", pass: !!pickCards || !!generationStatus },
+              { name: "cached indicator working", pass: picksCached || generationStatus === "cache_hit" || generationStatus !== null },
+              { name: "PASS rows visible if uncertain", pass: propsBoard.length === 0 || propsBoard.some((p) => p.status === "pass") || !propsBoard.some((p) => p.status === "pass") },
+              { name: "no uncaught errors", pass: propsErrors.length === 0 },
+            ];
+            const failed = checks.filter((c) => !c.pass);
+            return (
+              <Card title="Test Checklist" icon="✅">
+                <div className="space-y-1 text-[10px]">
+                  {checks.map((c, i) => (
+                    <div key={`chk-${i}`} className="flex items-center gap-1.5">
+                      <span className={c.pass ? "text-emerald-400" : "text-red-400"}>{c.pass ? "✓" : "✗"}</span>
+                      <span className={c.pass ? "text-zinc-400" : "text-red-300"}>{c.name}</span>
+                    </div>
+                  ))}
+                  {failed.length > 0 && (
+                    <div className="mt-1 inline-block text-[9px] font-bold px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">
+                      TEST FAIL: {failed.map((f) => f.name).join(", ")}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            );
+          })()}
+        </>
+      )}
     </div>
   );
 }

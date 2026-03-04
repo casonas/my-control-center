@@ -116,7 +116,7 @@ export async function POST(req: Request) {
         market,
         line: p.line ?? null,
         odds: p.odds ?? null,
-        book: p.book?.trim() ?? null,
+        book: p.book?.trim() ?? undefined,
       };
       if (status === "active") activeRows.push(row);
 
@@ -127,7 +127,7 @@ export async function POST(req: Request) {
            WHERE user_id = ? AND league = ? AND player = ? AND market = ? AND book = ?
            LIMIT 1`
         )
-        .bind(userId, league, row.player, row.market, row.book)
+        .bind(userId, league, row.player, row.market, row.book ?? null)
         .first<{ id: string }>();
 
       const boardHashPlaceholder = "__pending__";
