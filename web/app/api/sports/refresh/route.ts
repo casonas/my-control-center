@@ -1,5 +1,5 @@
 export const runtime = "edge";
-import { withMutatingAuth } from "@/lib/mutatingAuth";
+import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 import { runSportsRefresh } from "@/lib/sports/pipeline";
 import type { League } from "@/lib/sports/types";
@@ -8,7 +8,7 @@ const COOLDOWN_MS = 60 * 1000;
 const VALID_LEAGUES = new Set(["nba", "nfl", "mlb", "nhl"]);
 
 export async function POST(req: Request) {
-  return withMutatingAuth(req, async ({ session }) => {
+  return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
     const userId = session.user_id;

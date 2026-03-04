@@ -1,7 +1,7 @@
 export const runtime = "edge";
 // web/app/api/home/refresh/route.ts — Recompute home state from workspace summaries
 
-import { withMutatingAuth } from "@/lib/mutatingAuth";
+import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 
 async function safeCount(
@@ -31,7 +31,7 @@ async function safeAvg(
 }
 
 export async function POST(req: Request) {
-  return withMutatingAuth(req, async ({ session }) => {
+  return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
     if (!db)
       return Response.json({ error: "D1 not available" }, { status: 500 });

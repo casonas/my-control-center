@@ -17,10 +17,20 @@ MCC uses a D1-backed job queue so the UI and cron can trigger agent work without
 
 All internal endpoints require:
 ```
-X-Internal-Token: <INTERNAL_SHARED_SECRET>
+X-Internal-Token: <INTERNAL_SHARED_SECRET or CRON_SECRET>
 ```
 
-Set `INTERNAL_SHARED_SECRET` in both:
+Set one of these in both Cloudflare Pages and your VPS env:
+- `INTERNAL_SHARED_SECRET` (preferred)
+- `CRON_SECRET` (accepted fallback)
+
+Optional header for internal refresh routes:
+```
+X-Internal-User-Id: owner
+```
+If omitted, routes default to `owner`.
+
+Set the shared secret in both:
 - Cloudflare Pages environment variables
 - VPS bridge `.env`
 

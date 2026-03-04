@@ -159,11 +159,12 @@ export async function runJobsRefresh(db: D1Database, userId: string) {
           const title = item.title.replace(/(?:at|@)\s*.+$/, "").trim() || item.title;
           const dedupeKey = item.url.replace(/[?#].*$/, "").toLowerCase();
           try {
-            await db
+            const insertResult = await db
               .prepare(`INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`)
               .bind(id, userId, source.id, title, company, item.url, item.publishedAt, now, dedupeKey)
               .run();
-            newJobs++;
+            const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+            if (changes > 0) newJobs++;
           } catch { /* dedupe */ }
         }
       } catch { sourcesFailed++; }
