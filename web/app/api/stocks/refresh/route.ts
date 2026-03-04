@@ -105,7 +105,7 @@ export async function POST(req: Request) {
       const overallStatus = sourceHealth.every((s) => s.status === "ok")
         ? "ok" : sourceHealth.some((s) => s.status === "ok") ? "partial" : "error";
 
-      const errors = sourceHealth
+      const errorMessages = sourceHealth
         .filter((s) => s.status !== "ok" && s.error)
         .map((s) => `${s.name}: ${s.error}`);
 
@@ -116,7 +116,7 @@ export async function POST(req: Request) {
       ).bind(
         `stocks_refresh_${userId}`, now, overallStatus,
         quotesStored + indicesStored, Date.now() - start,
-        errors.length > 0 ? errors.join("; ") : null, now,
+        errorMessages.length > 0 ? errorMessages.join("; ") : null, now,
       ).run();
 
       return Response.json({
@@ -133,7 +133,7 @@ export async function POST(req: Request) {
         staleFallbackUsed,
         freshness,
         sourceHealth,
-        errors: errors.length > 0 ? errors : undefined,
+        errors: errorMessages.length > 0 ? errorMessages : undefined,
       });
     } catch (err) { return d1ErrorResponse("POST /api/stocks/refresh", err); }
   });

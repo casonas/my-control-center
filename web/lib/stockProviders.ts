@@ -545,11 +545,11 @@ export function sanitizeText(raw: string): string {
   // numeric entities (dec & hex)
   s = s.replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => {
     const cp = parseInt(hex, 16);
-    return cp > 0 && cp < 0x10FFFF ? String.fromCodePoint(cp) : "";
+    return cp > 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : "";
   });
   s = s.replace(/&#(\d+);/g, (_, dec) => {
     const cp = parseInt(dec, 10);
-    return cp > 0 && cp < 0x10FFFF ? String.fromCodePoint(cp) : "";
+    return cp > 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : "";
   });
   // named entities (strip unresolved ones)
   s = s.replace(/&([A-Za-z]+);/g, (_, name) => NAMED_ENTITIES[name.toLowerCase()] ?? "");
@@ -698,7 +698,7 @@ export function scoreNewsRelevance(
   return {
     impactScore: score,
     reasonTags: reasons,
-    isWatchlistRelevant: ticker != null && watchlistTickers.has((ticker || "").toUpperCase()),
+    isWatchlistRelevant: ticker != null && watchlistTickers.has(ticker.toUpperCase()),
   };
 }
 
