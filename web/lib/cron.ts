@@ -14,6 +14,8 @@ export const CRON_SCHEDULES: Record<string, { cron: string; description: string 
   jobs_refresh:           { cron: "0 9,13,18 * * 1-5",   description: "Weekday job feed refresh (9am/1pm/6pm)" },
   stocks_refresh:         { cron: "*/10 * * * *",         description: "Stock quotes + indices every 10 min" },
   stocks_news_scan:       { cron: "0 * * * *",            description: "Stock news RSS scan hourly" },
+  predictions_resolve:    { cron: "0 * * * *",            description: "Hourly prediction resolution" },
+  premarket_outliers:     { cron: "0 13 * * 1-5",         description: "Weekday pre-market outlier scan (8am ET)" },
   sports_refresh_nba:     { cron: "*/10 * * * *",         description: "NBA scores every 10 min" },
   sports_refresh_nfl:     { cron: "*/10 * * * *",         description: "NFL scores every 10 min" },
   skills_radar_scan:      { cron: "0 6 * * *",            description: "Daily skills radar at 6am" },

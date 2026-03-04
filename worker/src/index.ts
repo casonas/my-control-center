@@ -36,6 +36,7 @@ const FANOUT_MAP: Record<string, SubJob[]> = {
   "0 * * * *": [
     { name: "research_scan" },
     { name: "stocks_news_scan" },
+    { name: "predictions_resolve" },
   ],
   // Every 3 hours
   "0 */3 * * *": [
@@ -52,6 +53,10 @@ const FANOUT_MAP: Record<string, SubJob[]> = {
   // Weekday 9am/1pm/6pm
   "0 9,13,18 * * 1-5": [
     { name: "jobs_refresh" },
+  ],
+  // Weekday pre-market (13:00 UTC = 8am ET)
+  "0 13 * * 1-5": [
+    { name: "premarket_outliers" },
   ],
 };
 
@@ -725,6 +730,108 @@ async function runDailyBriefingGenerate(db: D1Database, userId: string): Promise
   }
 }
 
+// ─── Predictions resolver (inlined for worker) ──────
+
+async function runPredictionsResolve(db: D1Database, userId: string): Promise<JobResult> {
+  try {
+    const now = new Date().toISOString();
+    const rows = await db
+      .prepare(`SELECT id, ticker, prediction_type, prediction_text, target_price, target_change_pct, confidence FROM stock_predictions WHERE user_id = ? AND status = 'open' AND due_at <= ?`)
+      .bind(userId, now)
+      .all<{ id: string; ticker: string; prediction_type: string; prediction_text: string; target_price: number | null; target_change_pct: number | null; confidence: number }>();
+    const predictions = rows.results || [];
+    let resolved = 0;
+
+    for (const pred of predictions) {
+      try {
+        const quote = await db
+          .prepare(`SELECT price, change_pct FROM stock_quotes WHERE user_id = ? AND ticker = ?`)
+          .bind(userId, pred.ticker)
+          .first<{ price: number; change_pct: number }>();
+        if (!quote) continue;
+
+        const actualChangePct = quote.change_pct || 0;
+        const predictedUp = pred.prediction_text.toLowerCase().includes("up") ||
+          pred.prediction_text.toLowerCase().includes("bull") ||
+          (pred.target_change_pct !== null && pred.target_change_pct > 0);
+        const hit = (pred.prediction_type === "direction")
+          ? (predictedUp === (actualChangePct > 0) ? 1 : 0)
+          : (pred.target_price !== null && quote.price >= pred.target_price ? 1 : 0);
+
+        const forecastProb = pred.confidence / 100;
+        const brierScore = Math.round(Math.pow(forecastProb - hit, 2) * 10000) / 10000;
+        const outcomeJson = JSON.stringify({ actual_price: quote.price, actual_change_pct: actualChangePct, resolved_at: now });
+
+        await db.prepare(
+          `UPDATE stock_predictions SET status = 'resolved', resolved_at = ?, actual_outcome_json = ?, score_brier = ?, score_hit = ? WHERE id = ? AND user_id = ?`
+        ).bind(now, outcomeJson, brierScore, hit, pred.id, userId).run();
+        resolved++;
+      } catch { /* individual failure */ }
+    }
+
+    // Update aggregate metrics
+    if (resolved > 0) {
+      for (const w of [{ name: "7d", days: 7 }, { name: "30d", days: 30 }, { name: "90d", days: 90 }]) {
+        try {
+          const since = new Date(Date.now() - w.days * 24 * 60 * 60 * 1000).toISOString();
+          const stats = await db.prepare(
+            `SELECT COUNT(*) as total, SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved,
+             AVG(CASE WHEN status = 'resolved' THEN score_hit ELSE NULL END) as hit_rate,
+             AVG(CASE WHEN status = 'resolved' THEN score_brier ELSE NULL END) as avg_brier
+             FROM stock_predictions WHERE user_id = ? AND created_at >= ?`
+          ).bind(userId, since).first<{ total: number; resolved: number; hit_rate: number | null; avg_brier: number | null }>();
+          if (stats) {
+            await db.prepare(
+              `INSERT OR REPLACE INTO stock_agent_metrics (user_id, window, total_predictions, resolved_predictions, hit_rate, avg_brier, calibration_score, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`
+            ).bind(userId, w.name, stats.total, stats.resolved, stats.hit_rate, stats.avg_brier, now).run();
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    return { items: resolved, failed: 0 };
+  } catch (err) {
+    console.warn("[cron] predictions_resolve failed:", err instanceof Error ? err.message : err);
+    return { items: 0, failed: 1 };
+  }
+}
+
+// ─── Pre-market outlier scanner (inlined for worker) ─
+
+const OUTLIER_GAP_THRESHOLD = 3.0;
+
+async function runPremarketOutliers(db: D1Database, userId: string): Promise<JobResult> {
+  try {
+    const now = new Date().toISOString();
+    const qr = await db
+      .prepare(`SELECT ticker, price, change_pct, premarket_price, premarket_change_pct, volume FROM stock_quotes WHERE user_id = ?`)
+      .bind(userId)
+      .all<{ ticker: string; price: number; change_pct: number; premarket_price: number | null; premarket_change_pct: number | null; volume: number | null }>();
+    const quotes = qr.results || [];
+    let outlierCount = 0;
+
+    for (const q of quotes) {
+      const changePct = q.premarket_change_pct ?? q.change_pct ?? 0;
+      if (Math.abs(changePct) >= OUTLIER_GAP_THRESHOLD) {
+        const type = changePct > 0 ? "gap_up" : "gap_down";
+        const zScore = Math.abs(changePct) / OUTLIER_GAP_THRESHOLD;
+        try {
+          await db.prepare(
+            `INSERT INTO stock_outliers (id, user_id, ticker, asof, outlier_type, z_score, details_json) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          ).bind(crypto.randomUUID(), userId, q.ticker, now, type, Math.round(zScore * 100) / 100,
+            JSON.stringify({ change_pct: changePct, price: q.price, premarket_price: q.premarket_price, severity: zScore >= 2 ? "high" : "medium", source: "premarket_scout" })).run();
+          outlierCount++;
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    return { items: outlierCount, failed: 0 };
+  } catch (err) {
+    console.warn("[cron] premarket_outliers failed:", err instanceof Error ? err.message : err);
+    return { items: 0, failed: 1 };
+  }
+}
+
 // ─── Job dispatcher with retry ───────────────────────
 type JobResult = { items: number; failed: number };
 
@@ -739,6 +846,8 @@ async function runJob(db: D1Database, userId: string, jobName: string): Promise<
     case "lesson_plan_refresh": return runLessonPlanRefresh(db, userId);
     case "industry_radar_refresh": return runIndustryRadarRefresh(db, userId);
     case "memory_summarize": return runMemorySummarize(db, userId);
+    case "predictions_resolve": return runPredictionsResolve(db, userId);
+    case "premarket_outliers": return runPremarketOutliers(db, userId);
     case "stocks_refresh": {
       const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all();
       return { items: (wl.results || []).length, failed: 0 };
