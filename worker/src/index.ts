@@ -40,12 +40,14 @@ const FANOUT_MAP: Record<string, SubJob[]> = {
   // Every 3 hours
   "0 */3 * * *": [
     { name: "industry_radar_refresh" },
+    { name: "research_trends_update" },
   ],
   // Daily 6am UTC
   "0 6 * * *": [
     { name: "lesson_plan_refresh" },
     { name: "skills_radar_scan" },
     { name: "memory_summarize" },
+    { name: "daily_briefing_generate" },
   ],
   // Weekday 9am/1pm/6pm
   "0 9,13,18 * * 1-5": [
@@ -149,6 +151,70 @@ function parseFeedItems(xml: string): { title: string; url: string; publishedAt:
   return items;
 }
 
+// ─── Inlined scoring/classification for worker (mirrors web/lib/rss.ts) ──
+
+const SCORE_BOOSTS: { pattern: RegExp; boost: number }[] = [
+  { pattern: /active.?exploit|exploit.?in.?the.?wild|under.?attack/i, boost: 30 },
+  { pattern: /zero.?day|0.?day/i, boost: 25 },
+  { pattern: /\bkev\b|known.?exploited/i, boost: 20 },
+  { pattern: /critical.?patch|emergency.?patch|out.?of.?band/i, boost: 20 },
+  { pattern: /ransomware|supply.?chain.?attack/i, boost: 18 },
+  { pattern: /\bcve-\d{4}-\d{4,}\b/i, boost: 15 },
+  { pattern: /government|healthcare|infrastructure|energy|financial/i, boost: 12 },
+  { pattern: /data.?breach|leak|exposed/i, boost: 10 },
+  { pattern: /microsoft|google|apple|cisco|fortinet|palo.?alto|crowdstrike/i, boost: 8 },
+  { pattern: /\bai\b|artificial.?intelligence|llm|machine.?learning/i, boost: 5 },
+];
+
+function workerScoreItem(title: string, summary?: string | null): { score: number; urgency: string } {
+  const text = `${title} ${summary || ""}`;
+  let score = 10;
+  for (const { pattern, boost } of SCORE_BOOSTS) {
+    if (pattern.test(text)) score += boost;
+  }
+  score = Math.min(score, 100);
+  const urgency = score >= 70 ? "critical" : score >= 50 ? "high" : score >= 30 ? "medium" : "low";
+  return { score, urgency };
+}
+
+function workerClassifyType(title: string, summary?: string | null): string {
+  const text = `${title} ${summary || ""}`.toLowerCase();
+  if (/\bcve-\d{4}-\d{4,}\b/.test(text)) return "cve";
+  if (/\badvisory\b|\balert\b|\bbulletin\b|\bkev\b|\bcisa\b/.test(text)) return "advisory";
+  if (/\bpolicy\b|\bregulat\b|\bcompliance\b|\bexecutive order\b/.test(text)) return "policy";
+  if (/\brumor\b|\bunconfirmed\b|\balleged\b/.test(text)) return "rumor";
+  if (/\banalysis\b|\bdeep dive\b|\binvestigat\b|\bresearch\b|\breport\b/.test(text)) return "analysis";
+  return "news";
+}
+
+function workerInferTags(title: string): string[] {
+  const lower = title.toLowerCase();
+  const tags: string[] = [];
+  if (/\bai\b|artificial intelligence|machine learning|llm|gpt/i.test(lower)) tags.push("AI");
+  if (/security|cyber|hack|breach|malware|vulnerability|cve|ransomware/i.test(lower)) tags.push("Security");
+  if (/cloud|aws|azure|gcp|serverless|kubernetes/i.test(lower)) tags.push("Cloud");
+  if (/vulnerabilit|cve-|exploit|zero.?day|patch/i.test(lower)) tags.push("Vulnerability");
+  if (/policy|regulation|compliance|gdpr|government|law/i.test(lower)) tags.push("Policy");
+  if (/privacy|data.?protection|surveillance/i.test(lower)) tags.push("Privacy");
+  return tags.length > 0 ? tags : ["Tech"];
+}
+
+function workerMakeDedupeKey(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    for (const p of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "ref", "source"]) {
+      u.searchParams.delete(p);
+    }
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.slice(0, -1);
+    }
+    return u.toString().toLowerCase();
+  } catch {
+    return url.replace(/[?#].*$/, "").toLowerCase();
+  }
+}
+
 // ─── Job runners ─────────────────────────────────────
 
 async function runResearchScan(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
@@ -157,14 +223,20 @@ async function runResearchScan(db: D1Database, userId: string): Promise<{ items:
   const now = new Date().toISOString();
   for (const src of (sources.results || [])) {
     try {
-      const res = await fetch(String(src.url), { signal: AbortSignal.timeout(8000), headers: { "User-Agent": "MCC-Cron/1.0" } });
+      const res = await fetch(String(src.url), { signal: AbortSignal.timeout(8000), headers: { "User-Agent": "MCC-Cron/2.0" } });
       if (!res.ok) { sourcesFailed++; continue; }
       const xml = await res.text();
       for (const item of parseFeedItems(xml)) {
         if (!item.url || !item.title) continue;
+        const tags = workerInferTags(item.title);
+        const { score, urgency } = workerScoreItem(item.title, item.summary);
+        const itemType = workerClassifyType(item.title, item.summary);
+        const dedupeKey = workerMakeDedupeKey(item.url);
         try {
-          await db.prepare(`INSERT OR IGNORE INTO research_items (id, user_id, source_id, title, url, published_at, fetched_at, summary, tags_json, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0)`)
-            .bind(crypto.randomUUID(), userId, String(src.id), item.title, item.url, item.publishedAt, now, item.summary).run();
+          await db.prepare(
+            `INSERT OR IGNORE INTO research_items (id, user_id, source_id, title, url, published_at, fetched_at, summary, tags_json, score, urgency, item_type, dedupe_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(crypto.randomUUID(), userId, String(src.id), item.title, item.url, item.publishedAt, now, item.summary, JSON.stringify(tags), score, urgency, itemType, dedupeKey).run();
           newItems++;
         } catch { /* dedupe */ }
       }
@@ -524,12 +596,147 @@ async function runSportsRefreshJob(db: D1Database, userId: string, league: strin
   return { items, failed };
 }
 
+// ─── Research Trends Update ──────────────────────────
+
+async function runResearchTrendsUpdate(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
+  const now = new Date().toISOString();
+  let updated = 0;
+
+  try {
+    // Count tag mentions in last 24h
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Get all tags from recent items for 24h window
+    const recent = await db.prepare(
+      `SELECT tags_json FROM research_items WHERE user_id = ? AND fetched_at >= ?`
+    ).bind(userId, since24h).all();
+
+    const tagCounts24h: Record<string, number> = {};
+    for (const row of (recent.results || [])) {
+      try {
+        const tags = JSON.parse(String(row.tags_json) || "[]") as string[];
+        for (const tag of tags) {
+          tagCounts24h[tag] = (tagCounts24h[tag] || 0) + 1;
+        }
+      } catch { /* skip bad JSON */ }
+    }
+
+    // Get 7d counts for momentum comparison
+    const week = await db.prepare(
+      `SELECT tags_json FROM research_items WHERE user_id = ? AND fetched_at >= ?`
+    ).bind(userId, since7d).all();
+
+    const tagCounts7d: Record<string, number> = {};
+    for (const row of (week.results || [])) {
+      try {
+        const tags = JSON.parse(String(row.tags_json) || "[]") as string[];
+        for (const tag of tags) {
+          tagCounts7d[tag] = (tagCounts7d[tag] || 0) + 1;
+        }
+      } catch { /* skip bad JSON */ }
+    }
+
+    // Upsert trends for 24h window
+    for (const [topic, count] of Object.entries(tagCounts24h)) {
+      const weekAvg = (tagCounts7d[topic] || 0) / 7;
+      const momentum = weekAvg > 0 ? count / weekAvg : count;
+      const trendId = crypto.randomUUID();
+      try {
+        await db.prepare(
+          `INSERT INTO research_trends (id, user_id, topic, window, mention_count, momentum_score, updated_at)
+           VALUES (?, ?, ?, '24h', ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET mention_count = ?, momentum_score = ?, updated_at = ?`
+        ).bind(trendId, userId, topic, count, Math.round(momentum * 100) / 100, now, count, Math.round(momentum * 100) / 100, now).run();
+        updated++;
+      } catch {
+        // Try update by topic instead if ID collision
+        try {
+          await db.prepare(
+            `UPDATE research_trends SET mention_count = ?, momentum_score = ?, updated_at = ?
+             WHERE user_id = ? AND topic = ? AND window = '24h'`
+          ).bind(count, Math.round(momentum * 100) / 100, now, userId, topic).run();
+        } catch { /* non-critical */ }
+      }
+    }
+
+    // Upsert trends for 7d window
+    for (const [topic, count] of Object.entries(tagCounts7d)) {
+      const trendId = crypto.randomUUID();
+      try {
+        await db.prepare(
+          `INSERT INTO research_trends (id, user_id, topic, window, mention_count, momentum_score, updated_at)
+           VALUES (?, ?, ?, '7d', ?, 1.0, ?)
+           ON CONFLICT(id) DO UPDATE SET mention_count = ?, updated_at = ?`
+        ).bind(trendId, userId, topic, count, now, count, now).run();
+      } catch { /* non-critical */ }
+    }
+  } catch (err) {
+    console.warn("[cron] research_trends_update failed:", err instanceof Error ? err.message : err);
+    return { items: updated, failed: 1 };
+  }
+
+  return { items: updated, failed: 0 };
+}
+
+// ─── Daily Briefing Generate ─────────────────────────
+
+async function runDailyBriefingGenerate(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const items = await db.prepare(
+      `SELECT title, score, urgency, url, tags_json
+       FROM research_items WHERE user_id = ? AND fetched_at >= ?
+       ORDER BY score DESC LIMIT 30`
+    ).bind(userId, since).all();
+
+    const rows = (items.results || []) as { title: string; score: number; urgency: string; url: string; tags_json?: string }[];
+    if (rows.length === 0) return { items: 0, failed: 0 };
+
+    // Rule-based briefing (no LLM cost)
+    const top = rows.slice(0, 5);
+    const lines = ["# Daily Intelligence Brief\n"];
+    lines.push(`*Generated ${new Date().toISOString().slice(0, 10)} — Rule-based summary*\n`);
+    lines.push("## Top Developments\n");
+
+    for (let i = 0; i < top.length; i++) {
+      const item = top[i];
+      const badge = item.urgency === "critical" ? "🔴" : item.urgency === "high" ? "🟠" : item.urgency === "medium" ? "🟡" : "🟢";
+      lines.push(`${i + 1}. ${badge} **${item.title}** (score: ${item.score})`);
+      lines.push(`   - [Read more](${item.url})`);
+    }
+
+    const critical = rows.filter(i => i.urgency === "critical").length;
+    const high = rows.filter(i => i.urgency === "high").length;
+    lines.push("\n## Action Summary\n");
+    if (critical > 0) lines.push(`- 🔴 **${critical} critical** items require immediate attention`);
+    if (high > 0) lines.push(`- 🟠 **${high} high** priority items to review today`);
+    lines.push(`- Total items scored: ${rows.length}`);
+
+    const bodyMd = lines.join("\n");
+    const now = new Date().toISOString();
+    const title = `Daily Brief — ${now.slice(0, 10)}`;
+
+    await db.prepare(
+      `INSERT INTO research_briefings (id, user_id, title, scope, body_md, model_used, created_at)
+       VALUES (?, ?, ?, 'daily', ?, 'rule-based', ?)`
+    ).bind(crypto.randomUUID(), userId, title, bodyMd, now).run();
+
+    return { items: 1, failed: 0 };
+  } catch (err) {
+    console.warn("[cron] daily_briefing_generate failed:", err instanceof Error ? err.message : err);
+    return { items: 0, failed: 1 };
+  }
+}
+
 // ─── Job dispatcher with retry ───────────────────────
 type JobResult = { items: number; failed: number };
 
 async function runJob(db: D1Database, userId: string, jobName: string): Promise<JobResult> {
   switch (jobName) {
     case "research_scan": return runResearchScan(db, userId);
+    case "research_trends_update": return runResearchTrendsUpdate(db, userId);
+    case "daily_briefing_generate": return runDailyBriefingGenerate(db, userId);
     case "jobs_refresh": return runJobsRefresh(db, userId);
     case "stocks_news_scan": return runStocksNewsScan(db, userId);
     case "skills_radar_scan": return runSkillsRadarScan(db, userId);
@@ -607,7 +814,7 @@ export default {
     }
 
     // Daily-only jobs that use idempotency
-    const dailyJobs = new Set(["lesson_plan_refresh", "memory_summarize", "skills_radar_scan"]);
+    const dailyJobs = new Set(["lesson_plan_refresh", "memory_summarize", "skills_radar_scan", "daily_briefing_generate"]);
 
     for (const userId of userIds) {
       for (const subjob of subjobs) {

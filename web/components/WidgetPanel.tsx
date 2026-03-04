@@ -1877,20 +1877,32 @@ function StocksWidgets(_props: { refresh: () => void }) {
    RESEARCH — News + Deep Dive courses
    ═══════════════════════════════════════════════════════ */
 function ResearchWidgets({ research: localResearch, refresh }: { research: ResearchArticle[]; refresh: () => void }) {
-  const [filter, setFilter] = useState<"all" | "unread" | "saved">("all");
+  const [filter, setFilter] = useState<"all" | "unread" | "saved" | "high" | "archived">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [noteText, setNoteText] = useState<Record<string, string>>({});
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
+  const [activePane, setActivePane] = useState<"stream" | "insights">("stream");
 
   // API-backed items
   interface ApiItem {
     id: string; title: string; url: string; source_name?: string;
     published_at?: string; fetched_at: string; summary?: string;
-    tags_json?: string; is_read: number; is_saved: number;
+    tags_json?: string; is_read: number; is_saved: number; is_archived?: number;
+    score?: number; urgency?: string; item_type?: string; notes_md?: string;
   }
   const [apiItems, setApiItems] = useState<ApiItem[]>([]);
   const [hasApi, setHasApi] = useState(false);
+
+  // Entities & Trends
+  interface EntityItem { id: string; name: string; type: string; watch: number }
+  interface TrendItem { id: string; topic: string; mention_count: number; momentum_score: number; window: string }
+  interface BriefingItem { id: string; title: string; body_md: string; scope: string; created_at: string; model_used?: string }
+  const [entities, setEntities] = useState<EntityItem[]>([]);
+  const [trends, setTrends] = useState<TrendItem[]>([]);
+  const [latestBriefing, setLatestBriefing] = useState<BriefingItem | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [deepDiveTopic, setDeepDiveTopic] = useState("");
 
   const loadFeed = useCallback(async (f: string) => {
     try {
@@ -1904,16 +1916,29 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
     }
   }, []);
 
+  const loadSidebar = useCallback(async () => {
+    try {
+      const [entData, trendData] = await Promise.all([
+        apiGet<{ entities: EntityItem[] }>("/research/entities?watch=1").catch(() => ({ entities: [] })),
+        apiGet<{ trends: TrendItem[] }>("/research/trends?window=24h").catch(() => ({ trends: [] })),
+      ]);
+      setEntities(entData.entities || []);
+      setTrends(trendData.trends || []);
+    } catch { /* non-fatal */ }
+  }, []);
+
   useEffect(() => { loadFeed(filter); }, [filter, loadFeed]);
+  useEffect(() => { loadSidebar(); }, [loadSidebar]);
 
   async function handleScan() {
     setScanning(true);
     setScanResult(null);
     try {
-      const data = await apiPost<{ ok: boolean; newItems?: number; sources?: number; tookMs?: number; error?: string }>("/research/scan", {});
+      const data = await apiPost<{ ok: boolean; newItems?: number; entitiesLinked?: number; sources?: number; tookMs?: number; error?: string }>("/research/scan", {});
       if (data.ok) {
         setScanResult(`Found ${data.newItems || 0} new items from ${data.sources || 0} sources (${data.tookMs || 0}ms)`);
         loadFeed(filter);
+        loadSidebar();
       } else {
         setScanResult(data.error || "Scan failed");
       }
@@ -1929,7 +1954,6 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
       await apiPost(`/research/item/${itemId}/read`, { isRead });
       loadFeed(filter);
     } catch {
-      // fallback to local
       toggleArticleRead(itemId);
       refresh();
     }
@@ -1939,12 +1963,44 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
     try {
       await apiPost(`/research/item/${itemId}/save`, { isSaved });
       loadFeed(filter);
-    } catch {
-      // non-fatal
-    }
+    } catch { /* non-fatal */ }
   }
 
-  // Merged display: prefer API items, fall back to localStorage
+  async function handleArchiveItem(itemId: string, isArchived: boolean) {
+    try {
+      await apiPatch(`/research/item/${itemId}/archive`, { isArchived });
+      loadFeed(filter);
+    } catch { /* non-fatal */ }
+  }
+
+  async function handleSaveNote(itemId: string, notesMd: string) {
+    try {
+      await apiPatch(`/research/item/${itemId}/note`, { notes_md: notesMd });
+      loadFeed(filter);
+    } catch { /* non-fatal */ }
+  }
+
+  async function handleGenerateBriefing(scope: "daily" | "theme", theme?: string) {
+    setBriefingLoading(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (theme) body.theme = theme;
+      const data = await apiPost<{ ok: boolean; briefing?: BriefingItem }>(`/research/briefing/generate?scope=${scope}`, body);
+      if (data.ok && data.briefing) {
+        setLatestBriefing(data.briefing);
+      }
+    } catch { /* non-fatal */ }
+    setBriefingLoading(false);
+  }
+
+  async function handleWatchEntity(entityId: string, watch: boolean) {
+    try {
+      await apiPost("/research/entities/watch", { entity_id: entityId, watch });
+      loadSidebar();
+    } catch { /* non-fatal */ }
+  }
+
+  // Merged display
   const displayItems = hasApi ? apiItems.map((a) => ({
     id: a.id,
     title: a.title,
@@ -1953,10 +2009,14 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
     category: "tech" as const,
     read: a.is_read === 1,
     saved: a.is_saved === 1,
-    notes: "",
+    archived: (a.is_archived || 0) === 1,
+    notes: a.notes_md || "",
     summary: a.summary || "",
     tags: a.tags_json ? JSON.parse(a.tags_json) : [],
     publishedAt: a.published_at || a.fetched_at,
+    score: a.score || 0,
+    urgency: a.urgency || "low",
+    itemType: a.item_type || "news",
   })) : localResearch.map((r) => ({
     id: r.id,
     title: r.title,
@@ -1965,24 +2025,83 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
     category: r.category,
     read: r.read,
     saved: false,
+    archived: false,
     notes: r.notes,
     summary: "",
     tags: [] as string[],
     publishedAt: "",
+    score: 0,
+    urgency: "low",
+    itemType: "news",
   }));
 
   const unread = displayItems.filter((r) => !r.read).length;
   const readCount = displayItems.filter((r) => r.read).length;
+  const highUrgent = displayItems.filter((r) => r.urgency === "critical" || r.urgency === "high").length;
+
+  // Breaking Now: high urgency items from last 6 hours
+  const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const breakingItems = displayItems.filter((r) =>
+    (r.urgency === "critical" || r.urgency === "high") && r.publishedAt && r.publishedAt >= sixHoursAgo
+  ).slice(0, 3);
+
+  const urgencyBadge = (urgency: string) => {
+    const map: Record<string, string> = {
+      critical: "bg-red-500/20 text-red-400 border-red-500/30",
+      high: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+      medium: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+      low: "bg-zinc-700/50 text-zinc-400 border-zinc-600/30",
+    };
+    return map[urgency] || map.low;
+  };
+
+  const urgencyIcon = (urgency: string) => {
+    const map: Record<string, string> = { critical: "🔴", high: "🟠", medium: "🟡", low: "🟢" };
+    return map[urgency] || "🟢";
+  };
+
+  const itemTypeBadge = (t: string) => {
+    const map: Record<string, { label: string; color: string }> = {
+      cve: { label: "CVE", color: "rose" },
+      advisory: { label: "Advisory", color: "amber" },
+      policy: { label: "Policy", color: "violet" },
+      rumor: { label: "Rumor", color: "zinc" },
+      analysis: { label: "Analysis", color: "indigo" },
+      news: { label: "News", color: "zinc" },
+    };
+    return map[t] || map.news;
+  };
 
   return (
     <div className="space-y-3">
-      {/* Stats + Scan */}
-      <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="📰" value={displayItems.length} label="Articles" />
-        <StatBox icon="📖" value={readCount} label="Read" />
+      {/* Breaking Now Strip */}
+      {breakingItems.length > 0 && (
+        <div className="glass-light rounded-2xl p-3 border border-red-500/20 animate-fade-in">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+            </span>
+            <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Breaking Now</span>
+          </div>
+          {breakingItems.map((b) => (
+            <a key={b.id} href={b.url} target="_blank" rel="noopener noreferrer"
+              className="block text-xs text-white hover:text-red-300 transition mb-1 truncate">
+              {urgencyIcon(b.urgency)} {b.title} ↗
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* Stats Row */}
+      <div className="grid grid-cols-4 gap-2">
+        <StatBox icon="📰" value={displayItems.length} label="Total" />
         <StatBox icon="🆕" value={unread} label="Unread" />
+        <StatBox icon="🔥" value={highUrgent} label="Urgent" />
+        <StatBox icon="📖" value={readCount} label="Read" />
       </div>
 
+      {/* Scan + Agent */}
       <div className="flex items-center gap-2">
         <button
           onClick={handleScan}
@@ -1991,121 +2110,267 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
         >
           {scanning ? "Scanning…" : "🔍 Scan Now"}
         </button>
-        {scanResult && <span className="text-[10px] text-zinc-400">{scanResult}</span>}
+        {scanResult && <span className="text-[10px] text-zinc-400 flex-1 truncate">{scanResult}</span>}
       </div>
 
       <AgentStatus verb="researching latest cybersecurity news" />
 
-      {/* Filter tabs: All / Unread / Saved */}
-      <div className="flex gap-1 overflow-auto pb-1">
-        {(["all", "unread", "saved"] as const).map((f) => (
-          <button key={f} onClick={() => setFilter(f)} className={cx(
-            "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
-            filter === f ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{f === "all" ? "📋 All" : f === "unread" ? "🆕 Unread" : "💾 Saved"}</button>
-        ))}
+      {/* Mobile Pane Toggle */}
+      <div className="flex gap-1 lg:hidden">
+        <button onClick={() => setActivePane("stream")}
+          className={cx("flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border transition",
+            activePane === "stream" ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5"
+          )}>📰 Feed</button>
+        <button onClick={() => setActivePane("insights")}
+          className={cx("flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border transition",
+            activePane === "insights" ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5"
+          )}>🧠 Insights</button>
       </div>
 
-      {/* Articles */}
-      <div className="space-y-2 max-h-[60vh] overflow-auto">
-        {displayItems.length === 0 && (
-          <div className="text-center py-6 text-xs text-zinc-500">
-            {hasApi ? "No articles. Click Scan Now to fetch feeds." : "No articles in local store."}
+      {/* Filter Tabs */}
+      {(activePane === "stream" || typeof window !== "undefined" && window.innerWidth >= 1024) && (
+        <>
+          <div className="flex gap-1 overflow-auto pb-1">
+            {(["all", "unread", "saved", "high", "archived"] as const).map((f) => (
+              <button key={f} onClick={() => setFilter(f)} className={cx(
+                "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
+                filter === f ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+              )}>
+                {f === "all" ? "📋 All" : f === "unread" ? "🆕 Unread" : f === "saved" ? "💾 Saved" : f === "high" ? "🔥 Urgent" : "📦 Archived"}
+              </button>
+            ))}
           </div>
-        )}
-        {displayItems.map((article) => (
-          <div key={article.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
-            <button
-              onClick={() => setExpanded(expanded === article.id ? null : article.id)}
-              className="w-full text-left p-4 hover:bg-white/5 transition"
-            >
-              <div className="flex items-start gap-3">
-                <div className={cx(
-                  "w-2 h-2 rounded-full mt-1.5 shrink-0",
-                  article.read ? "bg-zinc-600" : "bg-indigo-500"
-                )} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {article.tags.slice(0, 2).map((t: string) => (
-                      <Badge key={t} color="indigo">{t}</Badge>
-                    ))}
-                    <span className="text-[10px] text-zinc-500">{article.source}</span>
-                    {article.publishedAt && (
-                      <span className="text-[10px] text-zinc-600">{new Date(article.publishedAt).toLocaleDateString()}</span>
-                    )}
-                  </div>
-                  <a
-                    href={article.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={cx("text-xs font-semibold mt-1 hover:underline block", article.read ? "text-zinc-400" : "text-white")}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {article.title} ↗
-                  </a>
-                  {article.summary && (
-                    <div className="text-[10px] text-zinc-500 mt-0.5 line-clamp-2">{article.summary}</div>
-                  )}
-                </div>
-                <span className={cx("text-zinc-500 transition-transform shrink-0", expanded === article.id && "rotate-90")}>›</span>
-              </div>
-            </button>
 
-            {expanded === article.id && (
-              <div className="px-4 pb-4 space-y-3 animate-fade-in border-t border-white/5 pt-3">
-                <div className="flex gap-2 flex-wrap">
-                  <button
-                    onClick={() => hasApi ? handleMarkRead(article.id, !article.read) : (() => { toggleArticleRead(article.id); refresh(); })()}
-                    className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
-                      article.read ? "bg-white/5 text-zinc-400" : "bg-indigo-500/20 text-indigo-400"
-                    )}
-                  >
-                    {article.read ? "Mark Unread" : "✓ Mark Read"}
-                  </button>
-                  <button
-                    onClick={() => handleSaveItem(article.id, !article.saved)}
-                    className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
-                      article.saved ? "bg-amber-500/20 text-amber-400" : "bg-white/5 text-zinc-400"
-                    )}
-                  >
-                    {article.saved ? "💾 Saved" : "Save"}
-                  </button>
-                  <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
-                    Open Source ↗
-                  </a>
-                </div>
-
-                {!hasApi && (
-                  <div>
-                    <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
-                    <textarea
-                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-20"
-                      placeholder="Add your thoughts, key takeaways, questions…"
-                      value={noteText[article.id] ?? article.notes}
-                      onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
-                    />
-                    <button
-                      onClick={() => { saveArticleNotes(article.id, noteText[article.id] ?? article.notes); refresh(); }}
-                      className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
-                    >
-                      Save Notes
-                    </button>
-                  </div>
-                )}
+          {/* News Stream */}
+          <div className="space-y-2 max-h-[50vh] overflow-auto">
+            {displayItems.length === 0 && (
+              <div className="text-center py-6 text-xs text-zinc-500">
+                {hasApi ? "No articles. Click Scan Now to fetch feeds." : "No articles in local store."}
               </div>
             )}
-          </div>
-        ))}
-      </div>
+            {displayItems.map((article) => {
+              const typeInfo = itemTypeBadge(article.itemType);
+              return (
+                <div key={article.id} className="glass-light rounded-2xl overflow-hidden animate-fade-in">
+                  <button
+                    onClick={() => setExpanded(expanded === article.id ? null : article.id)}
+                    className="w-full text-left p-3 hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-start gap-2">
+                      <div className={cx(
+                        "w-2 h-2 rounded-full mt-1.5 shrink-0",
+                        article.read ? "bg-zinc-600" : "bg-indigo-500"
+                      )} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          {/* Urgency badge */}
+                          <span className={cx("inline-block rounded-full px-1.5 py-0.5 text-[9px] font-bold border", urgencyBadge(article.urgency))}>
+                            {urgencyIcon(article.urgency)} {article.score}
+                          </span>
+                          {/* Item type badge */}
+                          <Badge color={typeInfo.color}>{typeInfo.label}</Badge>
+                          {/* Tags */}
+                          {article.tags.slice(0, 2).map((t: string) => (
+                            <Badge key={t} color="indigo">{t}</Badge>
+                          ))}
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] text-zinc-500">{article.source}</span>
+                          {article.publishedAt && (
+                            <span className="text-[10px] text-zinc-600">{new Date(article.publishedAt).toLocaleDateString()}</span>
+                          )}
+                        </div>
+                        <a
+                          href={article.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={cx("text-xs font-semibold mt-1 hover:underline block", article.read ? "text-zinc-400" : "text-white")}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {article.title} ↗
+                        </a>
+                        {article.summary && (
+                          <div className="text-[10px] text-zinc-500 mt-0.5 line-clamp-2">{article.summary}</div>
+                        )}
+                      </div>
+                      <span className={cx("text-zinc-500 transition-transform shrink-0", expanded === article.id && "rotate-90")}>›</span>
+                    </div>
+                  </button>
 
-      {/* Reading Progress */}
-      <Card title="Reading Progress" icon="📊">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-zinc-400">{readCount} of {displayItems.length} articles</span>
-          <span className="text-xs font-semibold text-white">{displayItems.length > 0 ? Math.round((readCount / displayItems.length) * 100) : 0}%</span>
+                  {expanded === article.id && (
+                    <div className="px-3 pb-3 space-y-3 animate-fade-in border-t border-white/5 pt-3">
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          onClick={() => hasApi ? handleMarkRead(article.id, !article.read) : (() => { toggleArticleRead(article.id); refresh(); })()}
+                          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
+                            article.read ? "bg-white/5 text-zinc-400" : "bg-indigo-500/20 text-indigo-400"
+                          )}
+                        >
+                          {article.read ? "Mark Unread" : "✓ Mark Read"}
+                        </button>
+                        <button
+                          onClick={() => handleSaveItem(article.id, !article.saved)}
+                          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
+                            article.saved ? "bg-amber-500/20 text-amber-400" : "bg-white/5 text-zinc-400"
+                          )}
+                        >
+                          {article.saved ? "💾 Saved" : "Save"}
+                        </button>
+                        <button
+                          onClick={() => handleArchiveItem(article.id, !article.archived)}
+                          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium transition",
+                            article.archived ? "bg-violet-500/20 text-violet-400" : "bg-white/5 text-zinc-400"
+                          )}
+                        >
+                          {article.archived ? "📦 Archived" : "Archive"}
+                        </button>
+                        <a href={article.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs hover:bg-white/10 transition">
+                          Open Source ↗
+                        </a>
+                      </div>
+
+                      {/* Notes */}
+                      {hasApi && (
+                        <div>
+                          <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
+                          <textarea
+                            className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-16"
+                            placeholder="Add your thoughts, key takeaways…"
+                            value={noteText[article.id] ?? article.notes}
+                            onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
+                          />
+                          <button
+                            onClick={() => handleSaveNote(article.id, noteText[article.id] ?? article.notes)}
+                            className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                          >
+                            Save Notes
+                          </button>
+                        </div>
+                      )}
+
+                      {!hasApi && (
+                        <div>
+                          <div className="text-[10px] text-zinc-400 mb-1.5 font-medium">Your Notes</div>
+                          <textarea
+                            className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-16"
+                            placeholder="Add your thoughts, key takeaways, questions…"
+                            value={noteText[article.id] ?? article.notes}
+                            onChange={(e) => setNoteText({ ...noteText, [article.id]: e.target.value })}
+                          />
+                          <button
+                            onClick={() => { saveArticleNotes(article.id, noteText[article.id] ?? article.notes); refresh(); }}
+                            className="mt-1 px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 transition"
+                          >
+                            Save Notes
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Insights Panel (right pane on desktop, toggled on mobile) */}
+      {(activePane === "insights" || typeof window !== "undefined" && window.innerWidth >= 1024) && (
+        <div className="space-y-3">
+          {/* Daily Briefing */}
+          <Card title="Daily Briefing" icon="📊" actions={
+            <button
+              onClick={() => handleGenerateBriefing("daily")}
+              disabled={briefingLoading}
+              className="px-2 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition"
+            >
+              {briefingLoading ? "Generating…" : "Generate"}
+            </button>
+          }>
+            {latestBriefing ? (
+              <div className="text-xs text-zinc-300 whitespace-pre-wrap max-h-40 overflow-auto">
+                {latestBriefing.body_md.replace(/^#.*\n/gm, "").replace(/\*([^*]+)\*/g, "$1").slice(0, 500)}
+                {latestBriefing.model_used === "rule-based" && (
+                  <div className="mt-2 text-[10px] text-zinc-500 italic">⚡ Rule-based summary (free)</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-zinc-500">Click Generate to create today&apos;s briefing.</div>
+            )}
+          </Card>
+
+          {/* Trending Topics */}
+          {trends.length > 0 && (
+            <Card title="Trending" icon="📈">
+              <div className="space-y-1.5">
+                {trends.slice(0, 6).map((t) => (
+                  <div key={t.id} className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-300">{t.topic}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-zinc-500">{t.mention_count} mentions</span>
+                      {t.momentum_score > 1.5 && (
+                        <span className="text-[10px] text-emerald-400">↑ {t.momentum_score.toFixed(1)}x</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Watch Entities */}
+          {entities.length > 0 && (
+            <Card title="Watchlist" icon="👁️">
+              <div className="space-y-1.5">
+                {entities.slice(0, 8).map((e) => (
+                  <div key={e.id} className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-300">
+                      {e.type === "cve" ? "🛡️" : e.type === "threat_actor" ? "🎭" : "🏢"} {e.name}
+                    </span>
+                    <button
+                      onClick={() => handleWatchEntity(e.id, e.watch === 0)}
+                      className={cx("text-[10px] px-2 py-0.5 rounded transition",
+                        e.watch ? "bg-amber-500/20 text-amber-400" : "bg-white/5 text-zinc-500"
+                      )}
+                    >
+                      {e.watch ? "Watching" : "Watch"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Deep Dive Launch */}
+          <Card title="Deep Dive" icon="🔬">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Topic or entity…"
+                value={deepDiveTopic}
+                onChange={(e) => setDeepDiveTopic(e.target.value)}
+                className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-1.5 text-xs text-white placeholder-zinc-500 outline-none"
+              />
+              <button
+                onClick={() => { if (deepDiveTopic.trim()) handleGenerateBriefing("theme", deepDiveTopic.trim()); }}
+                disabled={briefingLoading || !deepDiveTopic.trim()}
+                className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition"
+              >
+                {briefingLoading ? "…" : "Go"}
+              </button>
+            </div>
+          </Card>
+
+          {/* Reading Progress */}
+          <Card title="Reading Progress" icon="📊">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-zinc-400">{readCount} of {displayItems.length} articles</span>
+              <span className="text-xs font-semibold text-white">{displayItems.length > 0 ? Math.round((readCount / displayItems.length) * 100) : 0}%</span>
+            </div>
+            <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
+          </Card>
         </div>
-        <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
-      </Card>
+      )}
     </div>
   );
 }
