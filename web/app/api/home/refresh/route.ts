@@ -84,7 +84,6 @@ export async function POST(req: Request) {
       const topAlertsJson = JSON.stringify(topAlerts);
 
       // Upsert: check for existing row to reuse its id, or generate a new one
-      let rowId: string;
       const existing = await db
         .prepare(
           `SELECT id FROM home_daily_state WHERE user_id = ? AND date_key = ?`,
@@ -92,7 +91,7 @@ export async function POST(req: Request) {
         .bind(userId, dateKey)
         .first<{ id: string }>()
         .catch(() => null);
-      rowId = existing?.id ?? crypto.randomUUID();
+      const rowId = existing?.id ?? crypto.randomUUID();
 
       await db
         .prepare(
