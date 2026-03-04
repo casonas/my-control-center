@@ -53,23 +53,7 @@ export async function POST(req: Request) {
       // ── 2. trigger upstream data update (non-blocking)
       sourceHealth.push(await provider.triggerUpdate());
 
-      // ── 3. fetch quotes ─────────────────────────────
-      const qr = await provider.fetchQuotes(tickers);
-      sourceHealth.push(qr.health);
-
-      if (qr.quotes.length > 0) {
-        await storeQuotes(db, userId, qr.quotes);
-        quotesStored = qr.quotes.length;
-        freshness = buildFreshness(now, "stock-intel");
-      } else {
-        // API failed → serve stale D1 cache (never emit zeros)
-        const cached = await loadCachedQuotes(db, userId);
-        quotesStored = cached.quotes.length;
-        freshness = cached.freshness;
-        staleFallbackUsed = true;
-      }
-
-      // ── 4. fetch indices ────────────────────────────
+      // ── 3. fetch indices FIRST (persist regardless of quote outcome)
       const ir = await provider.fetchIndices();
       sourceHealth.push(ir.health);
 
@@ -79,7 +63,28 @@ export async function POST(req: Request) {
       } else {
         const cached = await loadCachedIndices(db, userId);
         indicesStored = cached.indices.length;
-        if (!staleFallbackUsed && cached.freshness) staleFallbackUsed = true;
+        if (cached.freshness) staleFallbackUsed = true;
+      }
+
+      // ── 4. fetch quotes ─────────────────────────────
+      const qr = await provider.fetchQuotes(tickers);
+      sourceHealth.push(qr.health);
+
+      // Determine actual data source for freshness label
+      const quoteSource = qr.quotes.length > 0
+        ? (qr.quotes[0].source || qr.health.name)
+        : "d1-cache";
+
+      if (qr.quotes.length > 0) {
+        await storeQuotes(db, userId, qr.quotes);
+        quotesStored = qr.quotes.length;
+        freshness = buildFreshness(now, quoteSource);
+      } else {
+        // API failed → serve stale D1 cache (never emit zeros)
+        const cached = await loadCachedQuotes(db, userId);
+        quotesStored = cached.quotes.length;
+        freshness = cached.freshness;
+        staleFallbackUsed = true;
       }
 
       // ── 5. outlier detection ────────────────────────
@@ -97,30 +102,39 @@ export async function POST(req: Request) {
       });
 
       // ── 7. cron_runs log ────────────────────────────
+      // Partial if at least indices succeeded, even if quotes failed
       const overallStatus = sourceHealth.every((s) => s.status === "ok")
         ? "ok" : sourceHealth.some((s) => s.status === "ok") ? "partial" : "error";
+
+      const errors = sourceHealth
+        .filter((s) => s.status !== "ok" && s.error)
+        .map((s) => `${s.name}: ${s.error}`);
 
       await db.prepare(
         `INSERT OR REPLACE INTO cron_runs
          (job_name, last_run_at, status, items_processed, took_ms, error, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         `stocks_refresh_${userId}`, now, overallStatus,
-        quotesStored + indicesStored, Date.now() - start, now,
+        quotesStored + indicesStored, Date.now() - start,
+        errors.length > 0 ? errors.join("; ") : null, now,
       ).run();
 
       return Response.json({
         ok: true,
         status: overallStatus,
+        quotesStored,
+        indicesStored,
         tickers: quotesStored,
         indices: indicesStored,
         outliers: outliers.length,
         tookMs: Date.now() - start,
         itemsProcessed: quotesStored + indicesStored,
-        source: provider.name,
+        source: quoteSource,
         staleFallbackUsed,
         freshness,
         sourceHealth,
+        errors: errors.length > 0 ? errors : undefined,
       });
     } catch (err) { return d1ErrorResponse("POST /api/stocks/refresh", err); }
   });

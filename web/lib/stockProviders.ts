@@ -221,15 +221,18 @@ export class StockIntelProvider {
     const tickerSet = new Set(tickers.map((s) => s.toUpperCase()));
     const quotes: QuoteData[] = [];
     const seen = new Set<string>();
+    let yahooError: string | undefined;
 
-    // 1) Try Yahoo Finance first
+    // 1) Try Yahoo Finance first (primary — works in Cloudflare runtime)
     try {
       const symbols = tickers.join(",");
       const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
       const res = await fetchWithRetry(yahooUrl);
       const body = await res.json() as Record<string, unknown>;
-      const qr = body.quoteResponse as Record<string, unknown> | undefined;
-      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+      const qr = (typeof body === "object" && body !== null)
+        ? (body as Record<string, unknown>).quoteResponse as Record<string, unknown> | undefined
+        : undefined;
+      const results = (qr && Array.isArray(qr.result)) ? qr.result as Record<string, unknown>[] : [];
 
       for (const r of results) {
         const sym = String(r.symbol || "").toUpperCase();
@@ -251,7 +254,13 @@ export class StockIntelProvider {
       if (quotes.length > 0 && tickers.every((tk) => seen.has(tk.toUpperCase()))) {
         return { quotes, health: { name: "yahoo", status: "ok", latencyMs: Date.now() - t } };
       }
-    } catch { /* Yahoo failed — fall through to Stock Intel */ }
+      // Yahoo returned data but parsed 0 valid quotes
+      if (quotes.length === 0) {
+        yahooError = `Yahoo returned 0 valid quotes (raw results: ${results.length}, symbols: ${symbols})`;
+      }
+    } catch (err) {
+      yahooError = `Yahoo fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // 2) Fallback to Stock Intel (only if configured)
     if (this.available) {
@@ -284,22 +293,31 @@ export class StockIntelProvider {
     } catch { /* Stock Intel also failed */ }
     } // end if (this.available)
 
+    // Determine actual source label — don't say "stock-intel" if only yahoo was used
+    const hasYahoo = quotes.some((q) => q.source === "yahoo");
+    const hasIntel = quotes.some((q) => q.source === "stock-intel");
+    const sourceName = hasYahoo && hasIntel ? "yahoo+stock-intel" : hasYahoo ? "yahoo" : hasIntel ? "stock-intel" : "none";
     const status = quotes.length > 0 ? "ok" : "error";
-    return { quotes, health: { name: quotes.some((q) => q.source === "yahoo") ? "yahoo+stock-intel" : this.name, status, latencyMs: Date.now() - t } };
+    const errorMsg = status === "error" ? (yahooError || "All sources returned 0 quotes") : undefined;
+    return { quotes, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
   /* ── indices: Yahoo Finance first, Stock Intel fallback ────── */
   async fetchIndices(): Promise<{ indices: IndexData[]; health: SourceHealth }> {
     const t = Date.now();
     const indices: IndexData[] = [];
+    const yahooSymbols = "^GSPC,^IXIC,BTC-USD";
+    let yahooError: string | undefined;
 
     // 1) Try Yahoo Finance for ^GSPC, ^IXIC, BTC-USD
     try {
-      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent("^GSPC,^IXIC,BTC-USD")}`;
+      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSymbols)}`;
       const res = await fetchWithRetry(yahooUrl);
       const body = await res.json() as Record<string, unknown>;
-      const qr = body.quoteResponse as Record<string, unknown> | undefined;
-      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+      const qr = (typeof body === "object" && body !== null)
+        ? (body as Record<string, unknown>).quoteResponse as Record<string, unknown> | undefined
+        : undefined;
+      const results = (qr && Array.isArray(qr.result)) ? qr.result as Record<string, unknown>[] : [];
 
       const symbolMap: Record<string, string> = { "^GSPC": "SPX", "^IXIC": "IXIC", "BTC-USD": "BTC" };
       for (const r of results) {
@@ -319,7 +337,11 @@ export class StockIntelProvider {
       if (indices.length > 0) {
         return { indices, health: { name: "yahoo/indices", status: "ok", latencyMs: Date.now() - t } };
       }
-    } catch { /* Yahoo failed — fall through */ }
+      // Yahoo returned data but parsed 0 valid indices
+      yahooError = `Yahoo returned 0 valid indices (raw results: ${results.length}, symbols: ${yahooSymbols})`;
+    } catch (err) {
+      yahooError = `Yahoo indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // 2) Fallback to Stock Intel summaries (only if configured)
     if (this.available) {
@@ -341,7 +363,9 @@ export class StockIntelProvider {
     } // end if (this.available)
 
     const status = indices.length > 0 ? "ok" : "error";
-    return { indices, health: { name: indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : `${this.name}/summaries`, status, latencyMs: Date.now() - t } };
+    const sourceName = indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : indices.length > 0 ? `${this.name}/summaries` : "none/indices";
+    const errorMsg = status === "error" ? (yahooError || `All index sources returned empty (requested: ${yahooSymbols})`) : undefined;
+    return { indices, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
   /* ── movers (GET /market/movers-by-news) ─────────── */
