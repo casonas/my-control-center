@@ -1,10 +1,14 @@
 export const runtime = "edge";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
-import { getQuoteProvider, storeQuotes, storeIndices, storeRegimeSnapshot } from "@/lib/stockProviders";
+import {
+  getStockIntelProvider, storeQuotes, storeIndices, storeRegimeSnapshot,
+  loadCachedQuotes, loadCachedIndices, buildFreshness,
+} from "@/lib/stockProviders";
+import type { SourceHealth, Freshness } from "@/lib/stockProviders";
 import { detectOutliers } from "@/lib/outlierEngine";
 
-const COOLDOWN_MS = 60 * 1000;
+const COOLDOWN_MS = 60_000;
 
 export async function POST(req: Request) {
   return withMutatingAuth(req, async ({ session }) => {
@@ -14,52 +18,107 @@ export async function POST(req: Request) {
     const start = Date.now();
 
     try {
-      const lastRun = await db.prepare(`SELECT last_run_at FROM cron_runs WHERE job_name = ?`).bind(`stocks_refresh_${userId}`).first<{ last_run_at: string }>();
+      // ── cooldown check ──────────────────────────────
+      const lastRun = await db.prepare(
+        `SELECT last_run_at FROM cron_runs WHERE job_name = ?`,
+      ).bind(`stocks_refresh_${userId}`).first<{ last_run_at: string }>();
       if (lastRun?.last_run_at) {
         const elapsed = Date.now() - new Date(lastRun.last_run_at).getTime();
-        if (elapsed < COOLDOWN_MS) return Response.json({ ok: false, error: `Wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s` }, { status: 429 });
+        if (elapsed < COOLDOWN_MS)
+          return Response.json({ ok: false, error: `Wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s` }, { status: 429 });
       }
 
-      // Get watchlist tickers
-      const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all<{ ticker: string }>();
+      // ── watchlist ───────────────────────────────────
+      const wl = await db.prepare(
+        `SELECT ticker FROM stock_watchlist WHERE user_id = ?`,
+      ).bind(userId).all<{ ticker: string }>();
       const tickers = (wl.results || []).map((r) => r.ticker);
       const now = new Date().toISOString();
 
-      // Fetch quotes via provider abstraction
-      const provider = getQuoteProvider();
-      const [quotesResult, indicesResult] = await Promise.all([
-        provider.fetchQuotes(tickers),
-        provider.fetchIndices(),
-      ]);
+      const sourceHealth: SourceHealth[] = [];
+      let staleFallbackUsed = false;
+      let quotesStored = 0;
+      let indicesStored = 0;
+      let freshness: Freshness | null = null;
 
-      // Store quotes + indices
-      await storeQuotes(db, userId, quotesResult.quotes);
-      await storeIndices(db, userId, indicesResult.indices);
+      const provider = getStockIntelProvider();
 
-      // Run outlier detection
+      // ── 1. sync universe (non-blocking) ─────────────
+      if (tickers.length > 0) {
+        sourceHealth.push(await provider.syncUniverse(tickers));
+      }
+
+      // ── 2. trigger upstream data update (non-blocking)
+      sourceHealth.push(await provider.triggerUpdate());
+
+      // ── 3. fetch quotes ─────────────────────────────
+      const qr = await provider.fetchQuotes(tickers);
+      sourceHealth.push(qr.health);
+
+      if (qr.quotes.length > 0) {
+        await storeQuotes(db, userId, qr.quotes);
+        quotesStored = qr.quotes.length;
+        freshness = buildFreshness(now, "stock-intel");
+      } else {
+        // API failed → serve stale D1 cache (never emit zeros)
+        const cached = await loadCachedQuotes(db, userId);
+        quotesStored = cached.quotes.length;
+        freshness = cached.freshness;
+        staleFallbackUsed = true;
+      }
+
+      // ── 4. fetch indices ────────────────────────────
+      const ir = await provider.fetchIndices();
+      sourceHealth.push(ir.health);
+
+      if (ir.indices.length > 0) {
+        await storeIndices(db, userId, ir.indices);
+        indicesStored = ir.indices.length;
+      } else {
+        const cached = await loadCachedIndices(db, userId);
+        indicesStored = cached.indices.length;
+        if (!staleFallbackUsed && cached.freshness) staleFallbackUsed = true;
+      }
+
+      // ── 5. outlier detection ────────────────────────
       const outliers = await detectOutliers(db, userId);
 
-      // Store regime snapshot
-      const spxIdx = indicesResult.indices.find((i) => i.symbol === "SPX");
-      const ndxIdx = indicesResult.indices.find((i) => i.symbol === "IXIC");
-      const riskMode = (spxIdx?.change_pct ?? 0) < -1 ? "risk_off" : (spxIdx?.change_pct ?? 0) > 1 ? "risk_on" : "neutral";
+      // ── 6. regime snapshot ──────────────────────────
+      const spxIdx = ir.indices.find((i) => i.symbol === "SPX");
+      const ndxIdx = ir.indices.find((i) => i.symbol === "IXIC");
+      const riskMode = (spxIdx?.change_pct ?? 0) < -1 ? "risk_off"
+        : (spxIdx?.change_pct ?? 0) > 1 ? "risk_on" : "neutral";
       await storeRegimeSnapshot(db, userId, {
         spx_change: spxIdx?.change_pct,
         ndx_change: ndxIdx?.change_pct,
         risk_mode: riskMode,
       });
 
-      await db.prepare(`INSERT OR REPLACE INTO cron_runs (job_name, last_run_at, status, items_processed, error) VALUES (?, ?, 'success', ?, NULL)`)
-        .bind(`stocks_refresh_${userId}`, now, tickers.length).run();
+      // ── 7. cron_runs log ────────────────────────────
+      const overallStatus = sourceHealth.every((s) => s.status === "ok")
+        ? "ok" : sourceHealth.some((s) => s.status === "ok") ? "partial" : "error";
+
+      await db.prepare(
+        `INSERT OR REPLACE INTO cron_runs
+         (job_name, last_run_at, status, items_processed, took_ms, error, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+      ).bind(
+        `stocks_refresh_${userId}`, now, overallStatus,
+        quotesStored + indicesStored, Date.now() - start, now,
+      ).run();
 
       return Response.json({
         ok: true,
-        tickers: tickers.length,
-        indices: indicesResult.indices.length,
+        status: overallStatus,
+        tickers: quotesStored,
+        indices: indicesStored,
         outliers: outliers.length,
         tookMs: Date.now() - start,
+        itemsProcessed: quotesStored + indicesStored,
         source: provider.name,
-        sourceHealth: [quotesResult.health, indicesResult.health],
+        staleFallbackUsed,
+        freshness,
+        sourceHealth,
       });
     } catch (err) { return d1ErrorResponse("POST /api/stocks/refresh", err); }
   });

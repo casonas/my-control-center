@@ -1888,17 +1888,25 @@ function SportsWidgets(_props: { refresh: () => void }) {
    ═══════════════════════════════════════════════════════ */
 function StocksWidgets(_props: { refresh: () => void }) {
   // API-backed state
-  interface WlItem { ticker: string; display_name?: string }
-  interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; asof?: string; source?: string }
+  interface WlItem { ticker: string; display_name?: string; sector?: string; market_cap_bucket?: string; tags_json?: string }
+  interface QuoteItem { ticker: string; price: number; change?: number; change_pct?: number; volume?: number | null; premarket_price?: number | null; premarket_change_pct?: number | null; asof?: string; source?: string }
   interface IndexItem { symbol: string; value: number; change_pct?: number; asof?: string; source?: string }
-  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string }
-  interface InsightItem { id: string; title: string; bullets_json: string; sentiment?: string; ticker?: string; created_at: string }
+  interface NewsItem { id: string; title: string; source: string; url: string; published_at?: string; sentiment?: string; catalyst_type?: string; sentiment_score?: number }
+  interface InsightItem { id: string; title: string; bullets_json: string; body_md?: string; sentiment?: string; ticker?: string; created_at: string; insight_type?: string }
+  interface FreshnessInfo { asof: string; ageSeconds: number; stale: boolean; source: string }
+  interface OutlierItem { id: string; ticker: string; outlier_type: string; z_score: number; details_json: string; asof: string }
+  interface PredictionItem { id: string; ticker: string; prediction_text: string; confidence: number; horizon: string; status: string; due_at: string; score_hit?: number | null; score_brier?: number | null; created_at: string }
 
   const [watchlist, setWatchlist] = useState<WlItem[]>([]);
   const [quotes, setQuotes] = useState<QuoteItem[]>([]);
   const [indices, setIndices] = useState<IndexItem[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [insights, setInsights] = useState<InsightItem[]>([]);
+  const [outliers, setOutliers] = useState<OutlierItem[]>([]);
+  const [predictions, setPredictions] = useState<PredictionItem[]>([]);
+  const [metrics, setMetrics] = useState<Record<string, { hit_rate?: number | null; avg_brier?: number | null; resolved_predictions?: number }>>({});
+  const [freshness, setFreshness] = useState<FreshnessInfo | null>(null);
+  const [regime, setRegime] = useState<{ risk_mode?: string; asof?: string } | null>(null);
   const [addTicker, setAddTicker] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -1906,10 +1914,21 @@ function StocksWidgets(_props: { refresh: () => void }) {
 
   const loadAll = useCallback(async () => {
     try { const d = await apiGet<{ tickers: WlItem[] }>("/stocks/watchlist"); setWatchlist(d.tickers || []); } catch { /* */ }
-    try { const d = await apiGet<{ quotes: QuoteItem[] }>("/stocks/quotes"); setQuotes(d.quotes || []); } catch { /* */ }
-    try { const d = await apiGet<{ indices: IndexItem[] }>("/stocks/indices"); setIndices(d.indices || []); } catch { /* */ }
+    try {
+      const d = await apiGet<{ quotes: QuoteItem[]; indices: IndexItem[]; freshness: FreshnessInfo | null }>("/stocks/quotes");
+      setQuotes(d.quotes || []);
+      setIndices(d.indices || []);
+      if (d.freshness) setFreshness(d.freshness);
+    } catch { /* */ }
     try { const d = await apiGet<{ items: NewsItem[] }>("/stocks/news?limit=20"); setNews(d.items || []); } catch { /* */ }
     try { const d = await apiGet<{ insights: InsightItem[] }>("/stocks/insights?ticker=ALL&limit=5"); setInsights(d.insights || []); } catch { /* */ }
+    try { const d = await apiGet<{ outliers: OutlierItem[] }>("/stocks/outliers?window=24h&limit=10"); setOutliers(d.outliers || []); } catch { /* */ }
+    try {
+      const d = await apiGet<{ predictions: PredictionItem[]; metrics: Record<string, { hit_rate?: number | null; avg_brier?: number | null; resolved_predictions?: number }> }>("/stocks/predictions?limit=10");
+      setPredictions(d.predictions || []);
+      setMetrics(d.metrics || {});
+    } catch { /* */ }
+    try { const d = await apiGet<{ regime: { risk_mode?: string; asof?: string } | null }>("/stocks/regime"); setRegime(d.regime); } catch { /* */ }
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -1920,11 +1939,24 @@ function StocksWidgets(_props: { refresh: () => void }) {
     catch { /* */ }
   }
 
+  async function handleRemoveTicker(ticker: string) {
+    try { await apiDelete(`/stocks/watchlist/${ticker}`); loadAll(); }
+    catch { /* */ }
+  }
+
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
     try {
-      const d = await apiPost<{ ok: boolean; tickers?: number; source?: string; error?: string }>("/stocks/refresh", {});
-      setStatusMsg(d.ok ? `Refreshed ${d.tickers || 0} tickers (${d.source || "done"})` : (d.error || "Failed"));
+      const d = await apiPost<{ ok: boolean; tickers?: number; source?: string; error?: string; staleFallbackUsed?: boolean; status?: string; freshness?: FreshnessInfo }>("/stocks/refresh", {});
+      if (d.ok) {
+        const parts = [`${d.tickers || 0} tickers`, d.source || ""];
+        if (d.staleFallbackUsed) parts.push("⚠ stale");
+        if (d.status) parts.push(d.status);
+        setStatusMsg(parts.filter(Boolean).join(" · "));
+        if (d.freshness) setFreshness(d.freshness);
+      } else {
+        setStatusMsg(d.error || "Failed");
+      }
       loadAll();
     } catch (e) { setStatusMsg(e instanceof Error ? e.message : "Failed"); }
     finally { setRefreshing(false); }
@@ -1933,7 +1965,7 @@ function StocksWidgets(_props: { refresh: () => void }) {
   async function handleNewsScan() {
     setScanning(true);
     try {
-      const d = await apiPost<{ ok: boolean; newItems?: number }>("/stocks/news", {});
+      const d = await apiPost<{ ok: boolean; newItems?: number }>("/stocks/news/scan", {});
       setStatusMsg(`News: ${d.newItems || 0} new items`);
       loadAll();
     } catch { /* */ }
@@ -1942,12 +1974,16 @@ function StocksWidgets(_props: { refresh: () => void }) {
 
   const quoteMap = Object.fromEntries(quotes.map((q) => [q.ticker, q]));
 
+  // Regime badge
+  const regimeBadge = regime?.risk_mode === "risk_on" ? "🟢 Risk On"
+    : regime?.risk_mode === "risk_off" ? "🔴 Risk Off" : "🟡 Neutral";
+
   const idxDisplay = (sym: string, label: string) => {
     const idx = indices.find((i) => i.symbol === sym);
-    if (!idx || idx.source === "pending") return (
+    if (!idx) return (
       <div className="glass-light rounded-xl p-3 text-center">
         <div className="text-[10px] text-zinc-400">{label}</div>
-        <div className="text-[10px] text-zinc-600">Not configured</div>
+        <div className="text-[10px] text-zinc-600">No data</div>
       </div>
     );
     const isUp = (idx.change_pct || 0) >= 0;
@@ -1961,25 +1997,45 @@ function StocksWidgets(_props: { refresh: () => void }) {
     );
   };
 
+  const catalystBadge = (type?: string) => {
+    if (!type) return null;
+    const colors: Record<string, string> = {
+      earnings: "amber", guidance: "sky", product: "violet", legal: "rose",
+      "m&a": "pink", analyst_rating: "cyan", macro: "orange",
+    };
+    return <Badge color={colors[type] || "zinc"}>{type}</Badge>;
+  };
+
   return (
     <div className="space-y-3">
+      {/* Top bar: regime + freshness */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-white">{regimeBadge}</span>
+          {freshness && (
+            <span className={cx("text-[10px]", freshness.stale ? "text-amber-400" : "text-zinc-500")}>
+              {freshness.stale ? "⚠ Stale" : "Fresh"} · {freshness.ageSeconds < 60 ? `${freshness.ageSeconds}s` : `${Math.round(freshness.ageSeconds / 60)}m`} ago
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={handleRefresh} disabled={refreshing}
+            className="px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 disabled:opacity-50 transition">
+            {refreshing ? "Refreshing…" : "🔄 Refresh"}
+          </button>
+          <button onClick={handleNewsScan} disabled={scanning}
+            className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition">
+            {scanning ? "Scanning…" : "📰 Scan News"}
+          </button>
+        </div>
+      </div>
+      {statusMsg && <div className="text-[10px] text-zinc-400 px-1">{statusMsg}</div>}
+
       {/* Market overview */}
       <div className="grid grid-cols-3 gap-2">
         {idxDisplay("SPX", "S&P 500")}
         {idxDisplay("IXIC", "NASDAQ")}
         {idxDisplay("BTC", "BTC")}
-      </div>
-
-      <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={handleRefresh} disabled={refreshing}
-          className="px-3 py-1.5 rounded-lg bg-lime-500/20 text-lime-400 text-xs font-medium hover:bg-lime-500/30 disabled:opacity-50 transition">
-          {refreshing ? "Refreshing…" : "🔄 Refresh"}
-        </button>
-        <button onClick={handleNewsScan} disabled={scanning}
-          className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/30 disabled:opacity-50 transition">
-          {scanning ? "Scanning…" : "📰 Scan News"}
-        </button>
-        {statusMsg && <span className="text-[10px] text-zinc-400">{statusMsg}</span>}
       </div>
 
       <AgentStatus verb="monitoring market movements" />
@@ -1997,29 +2053,59 @@ function StocksWidgets(_props: { refresh: () => void }) {
           {watchlist.length === 0 && <div className="text-[10px] text-zinc-500">Add tickers to your watchlist above.</div>}
           {watchlist.map((w) => {
             const q = quoteMap[w.ticker];
-            const hasData = q && q.source !== "pending";
+            const hasData = q && q.price > 0;
             const isUp = hasData && (q.change_pct || 0) >= 0;
             return (
-              <div key={w.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition">
+              <div key={w.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2.5 hover:bg-white/10 transition group">
                 <div>
                   <div className="text-xs font-semibold text-white">{w.ticker}</div>
-                  <div className="text-[10px] text-zinc-500">{w.display_name || ""}</div>
+                  <div className="text-[10px] text-zinc-500">{w.display_name || ""}{w.market_cap_bucket && w.market_cap_bucket !== "large" ? ` · ${w.market_cap_bucket}` : ""}</div>
                 </div>
-                {hasData ? (
-                  <div className="text-right">
-                    <div className="text-xs font-semibold text-white">${q.price.toFixed(2)}</div>
-                    <div className={cx("text-[10px] font-medium", isUp ? "text-emerald-400" : "text-rose-400")}>
-                      {isUp ? "▲" : "▼"} {Math.abs(q.change_pct || 0).toFixed(2)}%
+                <div className="flex items-center gap-2">
+                  {hasData ? (
+                    <div className="text-right">
+                      <div className="text-xs font-semibold text-white">${q.price.toFixed(2)}</div>
+                      <div className={cx("text-[10px] font-medium", isUp ? "text-emerald-400" : "text-rose-400")}>
+                        {isUp ? "▲" : "▼"} {Math.abs(q.change_pct || 0).toFixed(2)}%
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-zinc-600">Pending</div>
-                )}
+                  ) : (
+                    <div className="text-[10px] text-zinc-600">No quote</div>
+                  )}
+                  <button onClick={() => handleRemoveTicker(w.ticker)}
+                    className="text-[10px] text-zinc-600 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition">✕</button>
+                </div>
               </div>
             );
           })}
         </div>
       </Card>
+
+      {/* Outliers */}
+      {outliers.length > 0 && (
+        <Card title="Outliers" icon="🎯">
+          <div className="space-y-1.5 max-h-40 overflow-auto">
+            {outliers.map((o) => {
+              let details: Record<string, unknown> = {};
+              try { details = JSON.parse(o.details_json); } catch { /* */ }
+              return (
+                <div key={o.id} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-xs">
+                  <div>
+                    <span className="font-semibold text-white">{o.ticker}</span>
+                    <span className="text-zinc-500 ml-1">{o.outlier_type.replace("_", " ")}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className={cx("font-medium", Number(details.change_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                      z={o.z_score.toFixed(1)}
+                    </span>
+                    <span className="text-zinc-600 ml-1 text-[10px]">{String(details.severity || "")}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Market News */}
       <Card title="Market News" icon="📰">
@@ -2030,17 +2116,47 @@ function StocksWidgets(_props: { refresh: () => void }) {
               className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
               <div className="flex items-start justify-between gap-2">
                 <div className="text-xs text-white hover:underline">{n.title} ↗</div>
-                {n.sentiment && (
-                  <Badge color={n.sentiment === "bullish" ? "emerald" : n.sentiment === "bearish" ? "rose" : "zinc"}>
-                    {n.sentiment}
-                  </Badge>
-                )}
+                <div className="flex items-center gap-1 shrink-0">
+                  {catalystBadge(n.catalyst_type)}
+                  {n.sentiment_score != null && n.sentiment_score !== 0 && (
+                    <Badge color={n.sentiment_score > 0 ? "emerald" : "rose"}>
+                      {n.sentiment_score > 0 ? "bullish" : "bearish"}
+                    </Badge>
+                  )}
+                </div>
               </div>
               <div className="text-[10px] text-zinc-500 mt-0.5">{n.source} · {n.published_at ? new Date(n.published_at).toLocaleDateString() : ""}</div>
             </a>
           ))}
         </div>
       </Card>
+
+      {/* Predictions */}
+      {predictions.length > 0 && (
+        <Card title="Predictions" icon="🔮" actions={
+          metrics["30d"]?.resolved_predictions != null ? (
+            <span className="text-[10px] text-zinc-400">
+              Hit: {metrics["30d"].hit_rate != null ? `${(metrics["30d"].hit_rate! * 100).toFixed(0)}%` : "—"}
+              {" · Brier: "}{metrics["30d"].avg_brier != null ? metrics["30d"].avg_brier!.toFixed(3) : "—"}
+            </span>
+          ) : undefined
+        }>
+          <div className="space-y-1.5 max-h-48 overflow-auto">
+            {predictions.map((p) => (
+              <div key={p.id} className="rounded-xl bg-white/5 px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-white">{p.ticker} <span className="text-zinc-500 font-normal">{p.horizon}</span></div>
+                  <Badge color={p.status === "open" ? "sky" : p.score_hit === 1 ? "emerald" : p.score_hit === 0 ? "rose" : "zinc"}>
+                    {p.status === "open" ? "open" : p.score_hit === 1 ? "✓ hit" : p.score_hit === 0 ? "✗ miss" : p.status}
+                  </Badge>
+                </div>
+                <div className="text-[10px] text-zinc-400 mt-0.5">{p.prediction_text}</div>
+                <div className="text-[9px] text-zinc-600 mt-0.5">Conf: {p.confidence}% · Due: {new Date(p.due_at).toLocaleDateString()}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* AI Insights */}
       <Card title="AI Analysis" icon="🤖">
@@ -2051,10 +2167,15 @@ function StocksWidgets(_props: { refresh: () => void }) {
             {insights.map((ins) => {
               let bullets: string[] = [];
               try { bullets = JSON.parse(ins.bullets_json); } catch { /* */ }
+              const body = ins.body_md || bullets.map((b) => `• ${b}`).join("\n");
               return (
                 <div key={ins.id} className="rounded-xl bg-white/5 p-3">
                   <div className="text-xs font-semibold text-white">{ins.title}</div>
-                  {bullets.map((b, i) => <div key={i} className="text-[10px] text-zinc-400 mt-0.5">• {b}</div>)}
+                  {ins.body_md ? (
+                    <div className="text-[10px] text-zinc-400 mt-0.5 whitespace-pre-wrap">{body}</div>
+                  ) : (
+                    bullets.map((b, i) => <div key={i} className="text-[10px] text-zinc-400 mt-0.5">• {b}</div>)
+                  )}
                   <div className="text-[9px] text-zinc-600 mt-1">{new Date(ins.created_at).toLocaleString()}</div>
                 </div>
               );
