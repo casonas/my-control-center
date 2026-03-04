@@ -88,16 +88,16 @@ export async function POST(req: Request) {
     let userMessage = "";
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bodyBytes)) as Record<string, unknown>;
-      chatSessionId = (parsed.sessionId as string) || (parsed.conversationId as string) || null;
+      chatSessionId = (parsed.conversationId as string) || (parsed.sessionId as string) || null;
       chatAgentId = (parsed.agentId as string) || null;
       userMessage = (parsed.message as string) || "";
     } catch {
       // Body parse failed — continue without persistence
     }
 
-    // Persist user message (fire-and-forget, don't delay streaming)
+    // Persist user message — await to ensure it's saved before stream ends
     if (userMessage && chatSessionId) {
-      persistMessage(authSession.user_id, chatSessionId, chatAgentId, "user", userMessage);
+      await persistMessage(authSession.user_id, chatSessionId, chatAgentId, "user", userMessage).catch(() => {});
     }
 
     // Build upstream request headers — agent context rides in headers
@@ -160,10 +160,10 @@ export async function POST(req: Request) {
       async pull(controller) {
         const { value, done } = await reader.read();
         if (done) {
-          // Persist accumulated agent response
+          // Persist accumulated agent response — await to ensure it's saved
           if (agentContent && chatSessionId && !agentPersisted) {
             agentPersisted = true;
-            persistMessage(userId, chatSessionId, chatAgentId, "agent", agentContent);
+            await persistMessage(userId, chatSessionId, chatAgentId, "agent", agentContent).catch(() => {});
           }
           controller.close();
           return;
