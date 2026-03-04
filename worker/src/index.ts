@@ -11,38 +11,55 @@ export interface Env {
   CRON_SECRET: string;
 }
 
-// ─── Cron schedule → job mapping (matches 5 wrangler.toml triggers) ──
-const SCHEDULE_MAP: Record<string, string[]> = {
-  // Every 10 min
-  "stocks_refresh":        ["*/10 * * * *"],
-  "sports_refresh_nba":    ["*/10 * * * *"],
-  "sports_refresh_nfl":    ["*/10 * * * *"],
-  "sports_refresh_mlb":    ["*/10 * * * *"],
-  "sports_refresh_nhl":    ["*/10 * * * *"],
-  // Hourly
-  "research_scan":         ["0 * * * *"],
-  "stocks_news_scan":      ["0 * * * *"],
+// ─── Cron schedule → fan-out sub-job mapping (5 triggers only) ──
+// Each cron expression fans out to multiple sub-jobs.
+// Sub-jobs are logged individually as "pulse:<subjob>" in cron_runs.
+// Each sub-job has its own timeout and failure isolation.
+
+const SUBJOB_TIMEOUT_MS = 25_000; // per-subjob hard timeout
+
+interface SubJob {
+  name: string;            // logged as "pulse:<name>_<userId>" in cron_runs
+  timeoutMs?: number;      // override default timeout
+}
+
+const FANOUT_MAP: Record<string, SubJob[]> = {
+  // Every 10 min — high-frequency data refreshes
+  "*/10 * * * *": [
+    { name: "stocks_refresh" },
+    { name: "sports_refresh_nba" },
+    { name: "sports_refresh_nfl" },
+    { name: "sports_refresh_mlb" },
+    { name: "sports_refresh_nhl" },
+  ],
+  // Hourly — scans
+  "0 * * * *": [
+    { name: "research_scan" },
+    { name: "stocks_news_scan" },
+  ],
   // Every 3 hours
-  "industry_radar_refresh": ["0 */3 * * *"],
+  "0 */3 * * *": [
+    { name: "industry_radar_refresh" },
+  ],
   // Daily 6am UTC
-  "lesson_plan_refresh":   ["0 6 * * *"],
-  "skills_radar_scan":     ["0 6 * * *"],
-  "memory_summarize":      ["0 6 * * *"],
+  "0 6 * * *": [
+    { name: "lesson_plan_refresh" },
+    { name: "skills_radar_scan" },
+    { name: "memory_summarize" },
+  ],
   // Weekday 9am/1pm/6pm
-  "jobs_refresh":          ["0 9,13,18 * * 1-5"],
+  "0 9,13,18 * * 1-5": [
+    { name: "jobs_refresh" },
+  ],
 };
 
-function getJobsForCron(cron: string): string[] {
-  const jobs: string[] = [];
-  for (const [job, crons] of Object.entries(SCHEDULE_MAP)) {
-    if (crons.includes(cron)) {
-      jobs.push(job);
-    }
+function getSubJobsForCron(cron: string): SubJob[] {
+  const subjobs = FANOUT_MAP[cron];
+  if (!subjobs || subjobs.length === 0) {
+    console.warn(`[cron] No sub-jobs mapped for cron expression: "${cron}"`);
+    return [];
   }
-  if (jobs.length === 0) {
-    console.warn(`[cron] No jobs matched cron expression: "${cron}"`);
-  }
-  return jobs;
+  return subjobs;
 }
 
 // ─── Shared helpers (inlined — Workers can't import from Pages) ───
@@ -538,15 +555,26 @@ async function runJob(db: D1Database, userId: string, jobName: string): Promise<
 
 const MAX_RETRIES = 1;
 
-async function runJobWithRetry(db: D1Database, userId: string, jobName: string): Promise<JobResult> {
+/**
+ * Run a single sub-job with timeout + single retry.
+ * Returns result or throws on permanent failure.
+ */
+async function runSubJobWithRetry(db: D1Database, userId: string, jobName: string, timeoutMs: number): Promise<JobResult> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      return await runJob(db, userId, jobName);
+      // Race the job against a hard timeout
+      const result = await Promise.race([
+        runJob(db, userId, jobName),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs)
+        ),
+      ]);
+      return result;
     } catch (err) {
       lastError = err;
       if (attempt < MAX_RETRIES) {
-        console.warn(`[cron] ${jobName} for ${userId} attempt ${attempt + 1} failed, retrying...`);
+        console.warn(`[cron] pulse:${jobName} for ${userId} attempt ${attempt + 1} failed, retrying...`);
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       }
     }
@@ -554,7 +582,7 @@ async function runJobWithRetry(db: D1Database, userId: string, jobName: string):
   throw lastError;
 }
 
-// ─── Main scheduled handler ──────────────────────────
+// ─── Main scheduled handler (fan-out dispatcher) ─────
 export default {
   async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
     const db = env.DB;
@@ -569,8 +597,8 @@ export default {
     }
 
     const cron = event.cron;
-    const jobs = getJobsForCron(cron);
-    console.log(`[cron] Triggered by "${cron}", running jobs: ${jobs.join(", ")}`);
+    const subjobs = getSubJobsForCron(cron);
+    console.log(`[cron] Triggered by "${cron}", fan-out to ${subjobs.length} sub-jobs: ${subjobs.map(s => s.name).join(", ")}`);
 
     const userIds = await getAllUserIds(db);
     if (userIds.length === 0) {
@@ -578,38 +606,46 @@ export default {
       return;
     }
 
-    for (const userId of userIds) {
-      for (const jobName of jobs) {
-        const start = Date.now();
-        const jobKey = `${jobName}_${userId}`;
+    // Daily-only jobs that use idempotency
+    const dailyJobs = new Set(["lesson_plan_refresh", "memory_summarize", "skills_radar_scan"]);
 
-        // Idempotency: skip if already completed today
-        const idemKey = makeIdempotencyKey(jobName, userId);
-        // Only apply daily idempotency to infrequent jobs
-        const dailyJobs = ["lesson_plan_refresh", "memory_summarize", "skills_radar_scan"];
-        if (dailyJobs.includes(jobName) && await isAlreadyCompleted(db, idemKey)) {
-          console.log(`[cron] ${jobName} for ${userId}: already completed today, skipping`);
-          continue;
+    for (const userId of userIds) {
+      for (const subjob of subjobs) {
+        const jobName = subjob.name;
+        const pulseKey = `pulse:${jobName}_${userId}`;
+        const timeout = subjob.timeoutMs ?? SUBJOB_TIMEOUT_MS;
+        const start = Date.now();
+
+        // Idempotency: skip daily jobs already completed today
+        if (dailyJobs.has(jobName)) {
+          const idemKey = makeIdempotencyKey(jobName, userId);
+          if (await isAlreadyCompleted(db, idemKey)) {
+            console.log(`[cron] pulse:${jobName} for ${userId}: already completed today, skipping`);
+            continue;
+          }
         }
 
         try {
-          const result = await runJobWithRetry(db, userId, jobName);
+          const result = await runSubJobWithRetry(db, userId, jobName, timeout);
           const tookMs = Date.now() - start;
           const totalSources = result.items + result.failed;
           const status = result.failed === 0 ? "ok" : (totalSources > 0 && result.failed < totalSources) ? "partial" : "error";
-          await updateCronRun(db, jobKey, { status, itemsProcessed: result.items, tookMs });
+
+          // Log with pulse: prefix for individual sub-job tracking
+          await updateCronRun(db, pulseKey, { status, itemsProcessed: result.items, tookMs });
 
           // Mark daily jobs as completed for idempotency
-          if (dailyJobs.includes(jobName)) {
-            await markCompleted(db, idemKey);
+          if (dailyJobs.has(jobName)) {
+            await markCompleted(db, makeIdempotencyKey(jobName, userId));
           }
 
-          console.log(`[cron] ${jobName} for ${userId}: ${status}, ${result.items} items, ${tookMs}ms`);
+          console.log(`[cron] pulse:${jobName} for ${userId}: ${status}, ${result.items} items, ${tookMs}ms`);
         } catch (err) {
           const tookMs = Date.now() - start;
           const errMsg = err instanceof Error ? err.message : String(err);
-          await updateCronRun(db, jobKey, { status: "error", itemsProcessed: 0, tookMs, error: errMsg });
-          console.error(`[cron] ${jobName} for ${userId} FAILED:`, errMsg);
+          await updateCronRun(db, pulseKey, { status: "error", itemsProcessed: 0, tookMs, error: errMsg });
+          console.error(`[cron] pulse:${jobName} for ${userId} FAILED (${tookMs}ms): ${errMsg}`);
+          // Failure isolation: continue to next sub-job
         }
       }
     }
