@@ -15,7 +15,7 @@ interface Movement {
   minutes_ago: number;
 }
 
-export async function GET(req: Request) {
+export async function GET(_req: Request) {
   return withReadAuth(async ({ userId }) => {
     const db = getD1();
     if (!db) return Response.json({ movements: [] });
