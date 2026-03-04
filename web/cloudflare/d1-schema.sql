@@ -241,3 +241,65 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_target ON feedback(target_type, target_id);
+
+-- ─── Stocks Intelligence v2 ─────────────────────────
+
+CREATE TABLE IF NOT EXISTS market_regime_snapshots (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL,
+  asof           TEXT NOT NULL,
+  spx_change     REAL,
+  ndx_change     REAL,
+  vix_level      REAL,
+  breadth_score  REAL,
+  risk_mode      TEXT NOT NULL DEFAULT 'neutral',
+  notes_json     TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(user_id, asof)
+);
+CREATE INDEX IF NOT EXISTS idx_regime_asof ON market_regime_snapshots(user_id, asof DESC);
+
+CREATE TABLE IF NOT EXISTS stock_predictions (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  ticker              TEXT NOT NULL,
+  horizon             TEXT NOT NULL DEFAULT '1d',
+  prediction_type     TEXT NOT NULL DEFAULT 'direction',
+  prediction_text     TEXT NOT NULL,
+  target_price        REAL,
+  target_change_pct   REAL,
+  confidence          INTEGER NOT NULL DEFAULT 50,
+  rationale_md        TEXT NOT NULL DEFAULT '',
+  created_at          TEXT NOT NULL,
+  due_at              TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'open',
+  resolved_at         TEXT,
+  actual_outcome_json TEXT,
+  score_brier         REAL,
+  score_hit           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_status ON stock_predictions(user_id, ticker, status, due_at);
+CREATE INDEX IF NOT EXISTS idx_predictions_created ON stock_predictions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS stock_outliers (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  ticker       TEXT NOT NULL,
+  asof         TEXT NOT NULL,
+  outlier_type TEXT NOT NULL,
+  z_score      REAL NOT NULL DEFAULT 0,
+  details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_outliers_asof ON stock_outliers(user_id, asof DESC);
+CREATE INDEX IF NOT EXISTS idx_outliers_ticker ON stock_outliers(user_id, ticker, asof DESC);
+
+CREATE TABLE IF NOT EXISTS stock_agent_metrics (
+  user_id             TEXT NOT NULL,
+  window              TEXT NOT NULL DEFAULT '30d',
+  total_predictions   INTEGER NOT NULL DEFAULT 0,
+  resolved_predictions INTEGER NOT NULL DEFAULT 0,
+  hit_rate            REAL,
+  avg_brier           REAL,
+  calibration_score   REAL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (user_id, window)
+);
