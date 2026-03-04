@@ -7,6 +7,7 @@
 -- Add missing columns to job_items (additive only, no destructive changes)
 ALTER TABLE job_items ADD COLUMN match_score INTEGER DEFAULT 0;
 ALTER TABLE job_items ADD COLUMN why_match TEXT;
+ALTER TABLE job_items ADD COLUMN match_factors_json TEXT;
 ALTER TABLE job_items ADD COLUMN salary_text TEXT;
 ALTER TABLE job_items ADD COLUMN remote_flag TEXT DEFAULT 'unknown' CHECK(remote_flag IN ('0','1','unknown'));
 

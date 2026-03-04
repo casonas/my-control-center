@@ -544,6 +544,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [staleData, setStaleData] = useState(false);
 
   // Outreach draft state
   const [draftingJobId, setDraftingJobId] = useState<string | null>(null);
@@ -554,7 +555,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
     id: string; title: string; company: string; location?: string;
     url: string; status: string; posted_at?: string; fetched_at: string;
     remote?: number; remote_flag?: string; tags_json?: string; notes?: string;
-    match_score?: number; why_match?: string;
+    match_score?: number; why_match?: string; match_factors_json?: string;
   }
   const [apiJobs, setApiJobs] = useState<ApiJob[]>([]);
   const [pipeline, setPipeline] = useState<Record<string, number>>({});
@@ -607,17 +608,24 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
   async function handleRefresh() {
     setRefreshing(true); setRefreshResult(null);
     try {
-      const data = await apiPost<{ ok: boolean; newJobs?: number; inserted?: number; scored?: number; failedSources?: number; error?: string }>("/jobs/refresh", {});
+      const data = await apiPost<{ ok: boolean; newJobs?: number; inserted?: number; scored?: number; failedSources?: number; fetched?: number; deduped?: number; error?: string }>("/jobs/refresh", {});
       if (data.ok) {
         const parts = [`${data.inserted || data.newJobs || 0} new`];
+        if (data.deduped) parts.push(`${data.deduped} deduped`);
         if (data.scored) parts.push(`${data.scored} scored`);
         if (data.failedSources) parts.push(`${data.failedSources} source errors`);
         setRefreshResult(parts.join(", "));
+        // If refresh yielded 0 inserted items due to source failures, mark as stale
+        if ((data.inserted || 0) === 0 && (data.failedSources || 0) > 0) {
+          setStaleData(true);
+        } else {
+          setStaleData(false);
+        }
       } else {
         setRefreshResult(data.error || "Failed");
       }
       loadJobs(statusFilter); loadPipeline();
-    } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); }
+    } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); setStaleData(true); }
     finally { setRefreshing(false); }
   }
 
@@ -675,6 +683,9 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
 
   const lastRefreshLabel = lastRefresh ? new Date(lastRefresh).toLocaleString() : "Never";
 
+  // Detect stale: if lastRefresh > 12 hours ago, or already flagged
+  const isStale = staleData || (lastRefresh ? (Date.now() - new Date(lastRefresh).getTime() > 12 * 60 * 60 * 1000) : false);
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-2">
@@ -689,6 +700,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
           {refreshing ? "Refreshing…" : "🔄 Refresh Feed"}
         </button>
         <span className="text-[10px] text-zinc-500">Last: {lastRefreshLabel}</span>
+        {isStale && <Badge color="amber">⚠ Stale data</Badge>}
         {refreshResult && <span className="text-[10px] text-zinc-400">{refreshResult}</span>}
       </div>
 
@@ -748,6 +760,8 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
             const jobTags: string[] = j.tags_json ? JSON.parse(j.tags_json) : [];
             const ms = (j as ApiJob).match_score;
             const wm = (j as ApiJob).why_match;
+            const mfRaw = (j as ApiJob).match_factors_json;
+            const matchFactors: { category: string; label: string; delta: number }[] = mfRaw ? JSON.parse(mfRaw) : [];
             return (
             <div key={j.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
@@ -764,6 +778,15 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
                   </div>
                   <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
                   {wm && <div className="text-[10px] text-zinc-500 mt-0.5">{wm}</div>}
+                  {matchFactors.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5 opacity-0 group-hover:opacity-100 transition">
+                      {matchFactors.map((f, i) => (
+                        <span key={i} className={`text-[9px] px-1 py-0.5 rounded ${f.delta > 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
+                          {f.label} {f.delta > 0 ? "+" : ""}{f.delta}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-1 mt-1">
                     <Badge color={j.status === "applied" ? "cyan" : j.status === "interview" ? "violet" : j.status === "rejected" ? "rose" : "emerald"}>{j.status}</Badge>
                     {jobTags.slice(0, 4).map((t: string) => <Badge key={t} color="zinc">{t}</Badge>)}

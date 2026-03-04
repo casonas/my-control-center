@@ -195,16 +195,17 @@ const SKILL_KW = [
 const EXP_BOOST = [{ re: /\bjunior\b/i, d: 8 }, { re: /\bentry[- ]level\b/i, d: 10 }, { re: /\bassociate\b/i, d: 6 }];
 const EXP_PEN = [{ re: /\bsenior\b/i, d: -10 }, { re: /\bprincipal\b/i, d: -15 }, { re: /\bdirector\b/i, d: -15 }];
 
-function scoreJobInline(title: string, company: string, location: string | null): { score: number; why: string; tags: string } {
+function scoreJobInline(title: string, company: string, location: string | null): { score: number; why: string; tags: string; factors: string } {
   const text = `${title} ${company} ${location || ""}`.toLowerCase();
   let score = 0; const reasons: string[] = []; const tags: string[] = [];
-  for (const k of ROLE_KW) if (k.re.test(text)) { score += k.w; reasons.push(k.re.source.replace(/\\b/g, "")); tags.push(k.re.source.replace(/\\b/g, "")); }
-  for (const k of SKILL_KW) if (k.re.test(text)) { score += k.w; tags.push(k.re.source.replace(/\\b/g, "")); }
-  for (const e of EXP_BOOST) if (e.re.test(text)) { score += e.d; break; }
-  for (const e of EXP_PEN) if (e.re.test(text)) { score += e.d; break; }
-  if (/\bremote\b/i.test(text) || /\bhybrid\b/i.test(text)) { score += 5; tags.push("remote-friendly"); }
+  const factors: { category: string; label: string; delta: number }[] = [];
+  for (const k of ROLE_KW) if (k.re.test(text)) { score += k.w; reasons.push(k.re.source.replace(/\\b/g, "")); tags.push(k.re.source.replace(/\\b/g, "")); factors.push({ category: "role", label: k.re.source.replace(/\\b/g, ""), delta: k.w }); }
+  for (const k of SKILL_KW) if (k.re.test(text)) { score += k.w; tags.push(k.re.source.replace(/\\b/g, "")); factors.push({ category: "skill", label: k.re.source.replace(/\\b/g, ""), delta: k.w }); }
+  for (const e of EXP_BOOST) if (e.re.test(text)) { score += e.d; factors.push({ category: "experience", label: "entry-level boost", delta: e.d }); break; }
+  for (const e of EXP_PEN) if (e.re.test(text)) { score += e.d; factors.push({ category: "experience", label: "seniority penalty", delta: e.d }); break; }
+  if (/\bremote\b/i.test(text) || /\bhybrid\b/i.test(text)) { score += 5; tags.push("remote-friendly"); factors.push({ category: "remote", label: "remote/hybrid", delta: 5 }); }
   const fs = Math.max(0, Math.min(100, score));
-  return { score: fs, why: reasons.length > 0 ? `Matches: ${reasons.slice(0, 4).join(", ")}` : "No strong keyword matches", tags: JSON.stringify([...new Set(tags)]) };
+  return { score: fs, why: reasons.length > 0 ? `Matches: ${reasons.slice(0, 4).join(", ")}` : "No strong keyword matches", tags: JSON.stringify([...new Set(tags)]), factors: JSON.stringify(factors) };
 }
 
 function detectRemote(title: string, location: string | null): string {
@@ -214,6 +215,35 @@ function detectRemote(title: string, location: string | null): string {
   return "unknown";
 }
 
+// Deterministic dedupe key: hash(canonical_url + normalized_title + normalized_company)
+function workerBuildDedupeKey(rawUrl: string, title: string, company: string): string {
+  const canonical = rawUrl.replace(/[?#].*$/, "").toLowerCase();
+  const normTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const normCompany = company.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const input = `${canonical}|${normTitle}|${normCompany}`;
+  let hash = 5381;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) >>> 0;
+  }
+  return `${hash.toString(36)}_${normTitle.slice(0, 40).replace(/\s+/g, "_")}`;
+}
+
+// Per-source fetch with single retry + jitter
+async function workerFetchWithRetry(url: string, timeoutMs: number = 8000): Promise<{ ok: boolean; text: string } | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { "User-Agent": "MCC-Cron/1.0" } });
+      if (res.ok) return { ok: true, text: await res.text() };
+      if (attempt === 0) { await new Promise((r) => setTimeout(r, 500 + Math.random() * 1500)); continue; }
+      return null;
+    } catch {
+      if (attempt === 0) { await new Promise((r) => setTimeout(r, 500 + Math.random() * 1500)); continue; }
+      return null;
+    }
+  }
+  return null;
+}
+
 async function runJobsRefresh(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
   let newJobs = 0, sourcesFailed = 0;
   const sources = await db.prepare(`SELECT id, url, type FROM job_sources WHERE user_id = ? AND enabled = 1`).bind(userId).all();
@@ -221,24 +251,24 @@ async function runJobsRefresh(db: D1Database, userId: string): Promise<{ items: 
   for (const src of (sources.results || [])) {
     if (String(src.type) !== "rss") continue;
     try {
-      const res = await fetch(String(src.url), { signal: AbortSignal.timeout(8000), headers: { "User-Agent": "MCC-Cron/1.0" } });
-      if (!res.ok) { sourcesFailed++; continue; }
-      const xml = await res.text();
-      for (const item of parseFeedItems(xml)) {
+      const result = await workerFetchWithRetry(String(src.url), 8000);
+      if (!result) { sourcesFailed++; continue; }
+      for (const item of parseFeedItems(result.text)) {
         if (!item.url || !item.title) continue;
-        const dedupeKey = item.url.replace(/[?#].*$/, "").toLowerCase();
         const companyMatch = item.title.match(/(?:at|@|-|–|—)\s*(.+?)(?:\s*\(|$)/i);
         const company = companyMatch ? companyMatch[1].trim() : "Unknown";
         const title = item.title.replace(/(?:at|@)\s*.+$/, "").trim() || item.title;
+        const dedupeKey = workerBuildDedupeKey(item.url, title, company);
         const rf = detectRemote(title, null);
         const scoring = scoreJobInline(title, company, null);
+        // INSERT OR IGNORE: preserves existing rows — never overwrites user workflow state
         try {
           await db.prepare(
-            `INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key, match_score, why_match, tags_json, remote_flag)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)`
-          ).bind(crypto.randomUUID(), userId, String(src.id), title, company, item.url, item.publishedAt, now, dedupeKey, scoring.score, scoring.why, scoring.tags, rf).run();
+            `INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key, match_score, why_match, match_factors_json, tags_json, remote_flag)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)`
+          ).bind(crypto.randomUUID(), userId, String(src.id), title, company, item.url, item.publishedAt, now, dedupeKey, scoring.score, scoring.why, scoring.factors, scoring.tags, rf).run();
           newJobs++;
-        } catch { /* dedupe */ }
+        } catch { /* dedupe — existing row preserved */ }
       }
     } catch { sourcesFailed++; }
   }

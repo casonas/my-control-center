@@ -4,6 +4,7 @@ export interface ScoredJob {
   match_score: number;
   why_match: string;
   tags_json: string;
+  match_factors_json: string;
 }
 
 // ─── Keyword sets ────────────────────────────────────
@@ -78,11 +79,18 @@ export function scoreJob(title: string, company: string, location?: string | nul
   let score = 0;
   const reasons: string[] = [];
   const tags: string[] = [];
+  const factors: { category: string; label: string; delta: number }[] = [];
 
   // Check irrelevant roles first
   for (const pat of IRRELEVANT_PATTERNS) {
     if (pat.test(text)) {
-      return { match_score: 5, why_match: "Low relevance — unrelated role domain", tags_json: "[]" };
+      const f = [{ category: "irrelevant", label: "unrelated role domain", delta: -95 }];
+      return {
+        match_score: 5,
+        why_match: "Low relevance — unrelated role domain",
+        tags_json: "[]",
+        match_factors_json: JSON.stringify(f),
+      };
     }
   }
 
@@ -92,6 +100,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
       score += kw.weight;
       reasons.push(kw.label);
       tags.push(kw.label);
+      factors.push({ category: "role", label: kw.label, delta: kw.weight });
     }
   }
 
@@ -101,6 +110,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
       score += kw.weight;
       if (reasons.length < 4) reasons.push(kw.label);
       tags.push(kw.label);
+      factors.push({ category: "skill", label: kw.label, delta: kw.weight });
     }
   }
 
@@ -109,12 +119,14 @@ export function scoreJob(title: string, company: string, location?: string | nul
     if (exp.pattern.test(text)) {
       score += exp.delta;
       if (reasons.length < 4) reasons.push("entry-level fit");
+      factors.push({ category: "experience", label: "entry-level boost", delta: exp.delta });
       break;
     }
   }
   for (const exp of EXPERIENCE_PENALTY) {
     if (exp.pattern.test(text)) {
       score += exp.delta;
+      factors.push({ category: "experience", label: "seniority penalty", delta: exp.delta });
       break;
     }
   }
@@ -123,6 +135,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
   if (remoteFlag === "1" || /\bremote\b/i.test(text) || /\bhybrid\b/i.test(text)) {
     score += 5;
     tags.push("remote-friendly");
+    factors.push({ category: "remote", label: "remote/hybrid preference", delta: 5 });
   }
 
   // Clamp to 0-100
@@ -136,6 +149,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
     match_score: finalScore,
     why_match: whyMatch,
     tags_json: JSON.stringify([...new Set(tags)]),
+    match_factors_json: JSON.stringify(factors),
   };
 }
 
