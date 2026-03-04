@@ -8,14 +8,16 @@ export async function GET(req: Request) {
     if (!db) return Response.json({ insights: [] });
     const url = new URL(req.url);
     const ticker = url.searchParams.get("ticker") || "ALL";
+    const scope = url.searchParams.get("scope");
     const limit = Math.min(parseInt(url.searchParams.get("limit") || "20", 10), 100);
     try {
-      let r;
-      if (ticker === "ALL") {
-        r = await db.prepare(`SELECT * FROM stock_insights WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`).bind(userId, limit).all();
-      } else {
-        r = await db.prepare(`SELECT * FROM stock_insights WHERE user_id = ? AND ticker = ? ORDER BY created_at DESC LIMIT ?`).bind(userId, ticker, limit).all();
-      }
+      let query = `SELECT * FROM stock_insights WHERE user_id = ?`;
+      const params: (string | number)[] = [userId];
+      if (ticker !== "ALL") { query += ` AND ticker = ?`; params.push(ticker); }
+      if (scope) { query += ` AND scope = ?`; params.push(scope); }
+      query += ` ORDER BY created_at DESC LIMIT ?`;
+      params.push(limit);
+      const r = await db.prepare(query).bind(...params).all();
       return Response.json({ insights: r.results || [] });
     } catch { return Response.json({ insights: [] }); }
   });

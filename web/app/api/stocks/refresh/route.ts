@@ -1,6 +1,8 @@
 export const runtime = "edge";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
+import { getQuoteProvider, storeQuotes, storeIndices, storeRegimeSnapshot } from "@/lib/stockProviders";
+import { detectOutliers } from "@/lib/outlierEngine";
 
 const COOLDOWN_MS = 60 * 1000;
 
@@ -23,27 +25,42 @@ export async function POST(req: Request) {
       const tickers = (wl.results || []).map((r) => r.ticker);
       const now = new Date().toISOString();
 
-      // MVP: store placeholder quotes (real provider integration point)
-      // In production, replace with actual quote provider call
-      for (const ticker of tickers) {
-        await db.prepare(
-          `INSERT OR REPLACE INTO stock_quotes (user_id, ticker, price, change, change_pct, currency, asof, source)
-           VALUES (?, ?, 0, 0, 0, 'USD', ?, 'pending')`
-        ).bind(userId, ticker, now).run();
-      }
+      // Fetch quotes via provider abstraction
+      const provider = getQuoteProvider();
+      const [quotesResult, indicesResult] = await Promise.all([
+        provider.fetchQuotes(tickers),
+        provider.fetchIndices(),
+      ]);
 
-      // Store index placeholders
-      for (const sym of ["SPX", "IXIC", "BTC"]) {
-        await db.prepare(
-          `INSERT OR REPLACE INTO market_indices (user_id, symbol, value, change_pct, asof, source)
-           VALUES (?, ?, 0, 0, ?, 'pending')`
-        ).bind(userId, sym, now).run();
-      }
+      // Store quotes + indices
+      await storeQuotes(db, userId, quotesResult.quotes);
+      await storeIndices(db, userId, indicesResult.indices);
+
+      // Run outlier detection
+      const outliers = await detectOutliers(db, userId);
+
+      // Store regime snapshot
+      const spxIdx = indicesResult.indices.find((i) => i.symbol === "SPX");
+      const ndxIdx = indicesResult.indices.find((i) => i.symbol === "IXIC");
+      const riskMode = (spxIdx?.change_pct ?? 0) < -1 ? "risk_off" : (spxIdx?.change_pct ?? 0) > 1 ? "risk_on" : "neutral";
+      await storeRegimeSnapshot(db, userId, {
+        spx_change: spxIdx?.change_pct,
+        ndx_change: ndxIdx?.change_pct,
+        risk_mode: riskMode,
+      });
 
       await db.prepare(`INSERT OR REPLACE INTO cron_runs (job_name, last_run_at, status, items_processed, error) VALUES (?, ?, 'success', ?, NULL)`)
         .bind(`stocks_refresh_${userId}`, now, tickers.length).run();
 
-      return Response.json({ ok: true, tickers: tickers.length, indices: 3, tookMs: Date.now() - start, source: "pending" });
+      return Response.json({
+        ok: true,
+        tickers: tickers.length,
+        indices: indicesResult.indices.length,
+        outliers: outliers.length,
+        tookMs: Date.now() - start,
+        source: provider.name,
+        sourceHealth: [quotesResult.health, indicesResult.health],
+      });
     } catch (err) { return d1ErrorResponse("POST /api/stocks/refresh", err); }
   });
 }
