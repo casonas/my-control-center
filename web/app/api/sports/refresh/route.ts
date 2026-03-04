@@ -1,8 +1,11 @@
 export const runtime = "edge";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
+import { runSportsRefresh } from "@/lib/sports/pipeline";
+import type { League } from "@/lib/sports/types";
 
 const COOLDOWN_MS = 60 * 1000;
+const VALID_LEAGUES = new Set(["nba", "nfl", "mlb", "nhl"]);
 
 export async function POST(req: Request) {
   return withMutatingAuth(req, async ({ session }) => {
@@ -13,7 +16,10 @@ export async function POST(req: Request) {
 
     try {
       const body = await req.json() as { league?: string };
-      const league = body.league || "nba";
+      const league = (body.league || "nba") as League;
+      if (!VALID_LEAGUES.has(league)) {
+        return Response.json({ ok: false, error: "Invalid league" }, { status: 400 });
+      }
 
       // Throttle
       const jobKey = `sports_refresh_${league}_${userId}`;
@@ -25,14 +31,20 @@ export async function POST(req: Request) {
 
       const now = new Date().toISOString();
 
-      // MVP: Sports data provider placeholder
-      // In production, replace with actual sports API provider call
-      // For now, update cron_runs to track refresh attempts
-      await db.prepare(
-        `INSERT OR REPLACE INTO cron_runs (job_name, last_run_at, status, items_processed, error) VALUES (?, ?, 'success', 0, NULL)`
-      ).bind(jobKey, now).run();
+      // Run full pipeline: scores → odds → news → analyst
+      const result = await runSportsRefresh(db, userId, league);
 
-      return Response.json({ ok: true, league, games: 0, tookMs: Date.now() - start, source: "pending" });
+      // Log to cron_runs
+      await db.prepare(
+        `INSERT OR REPLACE INTO cron_runs (job_name, last_run_at, status, items_processed, error) VALUES (?, ?, ?, ?, ?)`
+      ).bind(jobKey, now, result.errors.length > 0 ? "partial" : "success", result.games + result.odds + result.news + result.predictions, result.errors.join("; ") || null).run();
+
+      return Response.json({
+        ok: true, league, tookMs: Date.now() - start, source: result.source,
+        games: result.games, odds: result.odds, news: result.news, predictions: result.predictions,
+        errors: result.errors.length > 0 ? result.errors : undefined,
+        sourceHealth: result.sourceHealth,
+      });
     } catch (err) { return d1ErrorResponse("POST /api/sports/refresh", err); }
   });
 }

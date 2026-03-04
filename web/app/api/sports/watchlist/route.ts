@@ -37,3 +37,20 @@ export async function POST(req: Request) {
     } catch (err) { return d1ErrorResponse("POST /api/sports/watchlist", err); }
   });
 }
+
+export async function DELETE(req: Request) {
+  return withMutatingAuth(req, async ({ session }) => {
+    const db = getD1();
+    if (!db) return Response.json({ error: "D1 not available" }, { status: 500 });
+    try {
+      const body = await req.json() as { league?: string; teamId?: string };
+      if (!body.league || !body.teamId) {
+        return Response.json({ error: "league, teamId required" }, { status: 400 });
+      }
+      await db.prepare(
+        `DELETE FROM sports_watchlist_teams WHERE user_id = ? AND league = ? AND team_id = ?`
+      ).bind(session.user_id, body.league, body.teamId).run();
+      return Response.json({ ok: true });
+    } catch (err) { return d1ErrorResponse("DELETE /api/sports/watchlist", err); }
+  });
+}
