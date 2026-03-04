@@ -35,16 +35,18 @@ export async function POST(req: Request) {
               await db
                 .prepare(
                   `INSERT INTO home_agent_handoffs
-                   (id, user_id, source_agent, target_agent, payload_json, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                   (id, user_id, from_agent, to_agent, intent, payload_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 )
                 .bind(
                   handoff_id,
                   session.user_id,
                   "home",
                   route,
+                  msg,
                   JSON.stringify({ message: msg }),
-                  "pending",
+                  "queued",
+                  now,
                   now,
                 )
                 .run();
