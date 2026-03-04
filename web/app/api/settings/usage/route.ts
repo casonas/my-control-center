@@ -53,10 +53,9 @@ export async function GET(req: Request) {
       const byModel = await db
         .prepare(
           `SELECT model,
-             COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-             COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-             COALESCE(SUM(estimated_cost_usd), 0) AS total_estimated_cost,
-             COUNT(*) AS request_count
+             COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COUNT(*) AS count
            FROM model_usage_events
            WHERE user_id = ? AND created_at >= ?
            GROUP BY model`
@@ -68,10 +67,9 @@ export async function GET(req: Request) {
       const byScope = await db
         .prepare(
           `SELECT feature_scope,
-             COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-             COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-             COALESCE(SUM(estimated_cost_usd), 0) AS total_estimated_cost,
-             COUNT(*) AS request_count
+             COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COUNT(*) AS count
            FROM model_usage_events
            WHERE user_id = ? AND created_at >= ?
            GROUP BY feature_scope`

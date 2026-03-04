@@ -183,13 +183,14 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
   // Load actions + digest from API on mount
   useEffect(() => {
     setActionsLoading(true);
-    apiGet<{ actions: HomeAction[] }>("/home/actions")
-      .then((d) => setActions(d.actions || []))
-      .catch(() => {});
-    apiGet<{ digest: HomeDigest | null }>("/home/digest/latest")
-      .then((d) => setDigest(d.digest || null))
-      .catch(() => {});
-    setActionsLoading(false);
+    Promise.all([
+      apiGet<{ actions: HomeAction[] }>("/home/actions")
+        .then((d) => setActions(d.actions || []))
+        .catch(() => {}),
+      apiGet<{ digest: HomeDigest | null }>("/home/digest/latest")
+        .then((d) => setDigest(d.digest || null))
+        .catch(() => {}),
+    ]).finally(() => setActionsLoading(false));
   }, []);
 
   const handleRefresh = useCallback(async () => {
@@ -339,7 +340,7 @@ function HomeWidgets({ assignments, skills, jobs, research, refresh }: {
         <div className="flex gap-2">
           <input
             className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-cyan-500/50 transition"
-            placeholder="Ask anything… e.g. &quot;What should I do next?&quot;"
+            placeholder={'Ask anything… e.g. "What should I do next?"'}
             value={commandText}
             onChange={(e) => setCommandText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") handleCommand(); }}
