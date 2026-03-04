@@ -428,49 +428,86 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
   const [noteTitle, setNoteTitle] = useState("");
   const [noteContent, setNoteContent] = useState("");
   const [filter, setFilter] = useState("all");
+  const [courseSel, setCourseSel] = useState("");
 
   // API-backed data
   interface ApiAssignment {
     id: string; title: string; due_at: string; status: string; priority?: string;
-    course_code?: string; course_name?: string; description?: string;
+    course_code?: string; course_name?: string; course_color?: string; description?: string;
+    course_id?: string; notes_md?: string; estimated_minutes?: number;
   }
-  interface ApiNote { id: string; title: string; content_md: string; updated_at: string }
-  interface CalEvent { id: string; title: string; start: string; status: string }
+  interface ApiNote { id: string; title: string; content_md: string; updated_at: string; course_id?: string; tags_json?: string }
+  interface CalEvent { id: string; title: string; start: string; end?: string; type?: string; status: string; course?: string | null }
+  interface ApiCourse { id: string; code: string; name?: string; term?: string; color?: string; instructor?: string; lms_url?: string }
+  interface ApiResource { id: string; category: string; name: string; url?: string; notes?: string; course_id?: string }
 
   const [apiAssignments, setApiAssignments] = useState<ApiAssignment[]>([]);
   const [apiNotes, setApiNotes] = useState<ApiNote[]>([]);
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
+  const [courses, setCourses] = useState<ApiCourse[]>([]);
+  const [resources, setResources] = useState<ApiResource[]>([]);
   const [hasApi, setHasApi] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [calView, setCalView] = useState<"month" | "week" | "agenda">("agenda");
+  const [showResources, setShowResources] = useState(false);
+  const [showAddResource, setShowAddResource] = useState(false);
+  const [newResName, setNewResName] = useState("");
+  const [newResUrl, setNewResUrl] = useState("");
+  const [newResCat, setNewResCat] = useState("other");
+  const [noteCourseId, setNoteCourseId] = useState("");
+
+  const loadCourses = useCallback(async () => {
+    try { const d = await apiGet<{ courses: ApiCourse[] }>("/school/courses"); setCourses(d.courses || []); } catch { /* */ }
+  }, []);
 
   const loadAssignments = useCallback(async (f: string) => {
     try {
-      const d = await apiGet<{ assignments: ApiAssignment[] }>(`/school/assignments?filter=${f}`);
+      let url = `/school/assignments?filter=${f}`;
+      if (courseSel) url += `&courseId=${courseSel}`;
+      const d = await apiGet<{ assignments: ApiAssignment[] }>(url);
       if (d.assignments) { setApiAssignments(d.assignments); setHasApi(true); }
     } catch { setHasApi(false); }
-  }, []);
+  }, [courseSel]);
 
   const loadNotes = useCallback(async () => {
-    try { const d = await apiGet<{ notes: ApiNote[] }>("/school/notes"); setApiNotes(d.notes || []); } catch { /* */ }
-  }, []);
+    try {
+      let url = "/school/notes";
+      if (courseSel) url += `?courseId=${courseSel}`;
+      const d = await apiGet<{ notes: ApiNote[] }>(url);
+      setApiNotes(d.notes || []);
+    } catch { /* */ }
+  }, [courseSel]);
 
   const loadCalendar = useCallback(async () => {
     try {
       const from = new Date().toISOString().slice(0, 10);
-      const to = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-      const d = await apiGet<{ events: CalEvent[] }>(`/school/calendar?from=${from}&to=${to}`);
+      const days = calView === "week" ? 7 : calView === "month" ? 30 : 14;
+      const to = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+      let url = `/school/calendar?from=${from}&to=${to}&view=${calView}`;
+      if (courseSel) url += `&courseId=${courseSel}`;
+      const d = await apiGet<{ events: CalEvent[] }>(url);
       setCalEvents(d.events || []);
     } catch { /* */ }
-  }, []);
+  }, [calView, courseSel]);
 
-  useEffect(() => { loadAssignments(filter); loadNotes(); loadCalendar(); }, [filter, loadAssignments, loadNotes, loadCalendar]);
+  const loadResources = useCallback(async () => {
+    try {
+      let url = "/school/resources";
+      if (courseSel) url += `?courseId=${courseSel}`;
+      const d = await apiGet<{ resources: ApiResource[] }>(url);
+      setResources(d.resources || []);
+    } catch { /* */ }
+  }, [courseSel]);
+
+  useEffect(() => { loadCourses(); }, [loadCourses]);
+  useEffect(() => { loadAssignments(filter); loadNotes(); loadCalendar(); loadResources(); }, [filter, courseSel, loadAssignments, loadNotes, loadCalendar, loadResources]);
 
   async function handleAddAssignment() {
     if (!newTitle.trim()) return;
     if (hasApi) {
       try {
         const dueAt = newDate ? new Date(newDate).toISOString() : new Date(Date.now() + 7 * 86400000).toISOString();
-        await apiPost("/school/assignments", { title: newTitle.trim(), dueAt, priority: newPriority });
+        await apiPost("/school/assignments", { title: newTitle.trim(), dueAt, priority: newPriority, courseId: courseSel || undefined });
         loadAssignments(filter);
       } catch { /* fallback */ }
     } else {
@@ -504,13 +541,34 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
   async function handleAddNote() {
     if (!noteTitle.trim()) return;
     if (hasApi) {
-      try { await apiPost("/school/notes", { title: noteTitle.trim(), contentMd: noteContent }); loadNotes(); }
+      try { await apiPost("/school/notes", { title: noteTitle.trim(), contentMd: noteContent, courseId: noteCourseId || undefined }); loadNotes(); }
       catch { /* fallback */ }
     } else {
       saveNote({ tab: "school", title: noteTitle.trim(), content: noteContent });
       refresh();
     }
-    setNoteTitle(""); setNoteContent("");
+    setNoteTitle(""); setNoteContent(""); setNoteCourseId("");
+  }
+
+  async function handleDeleteNote(id: string) {
+    if (hasApi) {
+      try { await apiDelete(`/school/notes/${id}`); loadNotes(); } catch { /* */ }
+    } else {
+      deleteNote(id); refresh();
+    }
+  }
+
+  async function handleAddResource() {
+    if (!newResName.trim()) return;
+    try {
+      await apiPost("/school/resources", { name: newResName.trim(), url: newResUrl.trim() || undefined, category: newResCat, courseId: courseSel || undefined });
+      loadResources();
+    } catch { /* */ }
+    setNewResName(""); setNewResUrl(""); setNewResCat("other"); setShowAddResource(false);
+  }
+
+  async function handleDeleteResource(id: string) {
+    try { await apiDelete(`/school/resources/${id}`); loadResources(); } catch { /* */ }
   }
 
   function handleExportICS() {
@@ -522,11 +580,12 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
   // Merge display: prefer API, fallback to local
   const schoolNotes = hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school");
   const pending = hasApi
-    ? apiAssignments.filter((a) => ["open", "in_progress"].includes(a.status))
+    ? apiAssignments.filter((a) => ["open", "in_progress", "late"].includes(a.status))
     : localAssignments.filter((a) => !a.completed);
   const completed = hasApi
     ? apiAssignments.filter((a) => a.status === "done")
     : localAssignments.filter((a) => a.completed);
+  const lateCount = hasApi ? apiAssignments.filter((a) => a.status === "late").length : 0;
 
   // Calendar: group events by date
   const calByDate = calEvents.reduce<Record<string, CalEvent[]>>((acc, ev) => {
@@ -535,6 +594,34 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
     return acc;
   }, {});
   const calDays = Object.keys(calByDate).sort();
+
+  // Default resources if none loaded
+  const defaultResources: ApiResource[] = [
+    { id: "def-lms", category: "lms", name: "LMS Portal (Canvas/Blackboard)", url: "", notes: "" },
+    { id: "def-library", category: "library", name: "Library Portal", url: "", notes: "" },
+    { id: "def-tutoring", category: "tutoring", name: "Tutoring Center", url: "", notes: "" },
+    { id: "def-writing", category: "writing", name: "Writing Center", url: "", notes: "" },
+    { id: "def-career", category: "career", name: "Career Center", url: "", notes: "" },
+  ];
+  const displayResources = resources.length > 0 ? resources : defaultResources;
+  const resCatIcons: Record<string, string> = { lms: "🎓", library: "📚", tutoring: "👩‍🏫", writing: "✍️", career: "💼", other: "🔗" };
+
+  // Due-soon badge helper
+  function dueBadge(dueAt: string, status: string) {
+    if (status === "done" || status === "dropped") return null;
+    const diff = Math.ceil((new Date(dueAt).getTime() - Date.now()) / 86400000);
+    if (diff < 0) return <Badge color="rose">Late</Badge>;
+    if (diff <= 7) return <Badge color="amber">Due soon</Badge>;
+    return null;
+  }
+
+  // Agent quick actions
+  const agentActions = [
+    { label: "Break assignment into steps", icon: "🧩" },
+    { label: "Create 5-day study plan", icon: "📅" },
+    { label: "Quiz me from this note", icon: "❓" },
+    { label: "Summarize attached file", icon: "📄" },
+  ];
 
   return (
     <div className="space-y-3">
@@ -545,8 +632,27 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
         <StatBox icon="📝" value={schoolNotes.length} label="Notes" />
       </div>
 
+      {/* Course selector */}
+      {courses.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => setCourseSel("")}
+            className={cx("px-2 py-1 rounded-lg text-[10px] font-medium border transition",
+              !courseSel ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+            )}>All Classes</button>
+          {courses.map((c) => (
+            <button key={c.id} onClick={() => setCourseSel(c.id)}
+              className={cx("px-2 py-1 rounded-lg text-[10px] font-medium border transition",
+                courseSel === c.id ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+              )}>
+              {c.color && <span className="inline-block w-2 h-2 rounded-full mr-1" style={{ backgroundColor: c.color }} />}
+              {c.code || c.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Calendar / ICS controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <button onClick={() => setShowCalendar(!showCalendar)}
           className={cx("px-3 py-1.5 rounded-lg text-xs font-medium border transition",
             showCalendar ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
@@ -555,29 +661,91 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
           className="px-3 py-1.5 rounded-lg bg-white/5 text-zinc-400 text-xs border border-white/5 hover:bg-white/10 transition">
           ⬇ Export ICS
         </button>
+        <button onClick={() => setShowResources(!showResources)}
+          className={cx("px-3 py-1.5 rounded-lg text-xs font-medium border transition",
+            showResources ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+          )}>🔗 Resources</button>
         {/* Filter tabs */}
         {(["all", "open", "due_soon", "late"] as const).map((f) => (
           <button key={f} onClick={() => setFilter(f)} className={cx(
             "px-2 py-1 rounded-lg text-[10px] font-medium border transition capitalize",
             filter === f ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
-          )}>{f === "due_soon" ? "Due Soon" : f}</button>
+          )}>
+            {f === "due_soon" ? "Due Soon" : f}
+            {f === "late" && lateCount > 0 && <span className="ml-1 text-rose-400">({lateCount})</span>}
+          </button>
         ))}
       </div>
 
       {/* Calendar view */}
       {showCalendar && (
-        <Card title="Upcoming Calendar" icon="📅">
+        <Card title="Upcoming Calendar" icon="📅" actions={
+          <div className="flex gap-1">
+            {(["agenda", "week", "month"] as const).map((v) => (
+              <button key={v} onClick={() => setCalView(v)}
+                className={cx("px-2 py-0.5 rounded text-[10px] font-medium border transition capitalize",
+                  calView === v ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 text-zinc-400 border-white/5 hover:bg-white/10"
+                )}>{v}</button>
+            ))}
+          </div>
+        }>
           <div className="space-y-2 max-h-48 overflow-auto">
-            {calDays.length === 0 && <div className="text-[10px] text-zinc-500">No events in the next 30 days.</div>}
+            {calDays.length === 0 && <div className="text-[10px] text-zinc-500">No events in this period.</div>}
             {calDays.map((day) => (
               <div key={day}>
                 <div className="text-[10px] text-zinc-400 font-semibold mb-0.5">{new Date(day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
                 {calByDate[day].map((ev) => (
                   <div key={ev.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-[10px]">
-                    <span className={cx("w-1.5 h-1.5 rounded-full", ev.status === "done" ? "bg-emerald-500" : "bg-violet-500")} />
-                    <span className="text-white truncate">{ev.title}</span>
+                    <span className={cx("w-1.5 h-1.5 rounded-full",
+                      ev.type === "exam" ? "bg-rose-500" : ev.type === "class" ? "bg-cyan-500" : ev.status === "done" ? "bg-emerald-500" : "bg-violet-500"
+                    )} />
+                    <span className="text-white truncate flex-1">{ev.title}</span>
+                    {ev.type && ev.type !== "assignment" && <span className="text-zinc-500 capitalize">{ev.type}</span>}
                   </div>
                 ))}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Resources panel */}
+      {showResources && (
+        <Card title="School Resources" icon="🔗" actions={
+          <button onClick={() => setShowAddResource(!showAddResource)}
+            className="text-[10px] px-2 py-1 rounded-lg bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 transition">
+            {showAddResource ? "Cancel" : "+ Add"}
+          </button>
+        }>
+          {showAddResource && (
+            <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10 space-y-2 animate-fade-in">
+              <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Resource name" value={newResName} onChange={(e) => setNewResName(e.target.value)} />
+              <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="URL (optional)" value={newResUrl} onChange={(e) => setNewResUrl(e.target.value)} />
+              <div className="flex gap-1 flex-wrap">
+                {(["lms", "library", "tutoring", "writing", "career", "other"] as const).map((c) => (
+                  <button key={c} onClick={() => setNewResCat(c)} className={cx("px-2 py-1 rounded-lg text-[10px] border transition capitalize",
+                    newResCat === c ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-white/5 border-white/5 text-zinc-400"
+                  )}>{resCatIcons[c]} {c}</button>
+                ))}
+                <button onClick={handleAddResource} className="ml-auto px-3 py-1 rounded-lg bg-violet-500/20 text-violet-400 text-[10px] font-medium hover:bg-violet-500/30 transition">Save</button>
+              </div>
+            </div>
+          )}
+          <div className="space-y-1.5 max-h-48 overflow-auto">
+            {displayResources.map((r) => (
+              <div key={r.id} className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 group hover:bg-white/10 transition">
+                <span className="text-sm">{resCatIcons[r.category] || "🔗"}</span>
+                <div className="min-w-0 flex-1">
+                  {r.url ? (
+                    <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-xs text-violet-400 hover:underline truncate block">{r.name}</a>
+                  ) : (
+                    <span className="text-xs text-zinc-300 truncate block">{r.name}</span>
+                  )}
+                </div>
+                <span className="text-[10px] text-zinc-500 capitalize">{r.category}</span>
+                {!r.id.startsWith("def-") && (
+                  <button onClick={() => handleDeleteResource(r.id)} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
+                )}
               </div>
             ))}
           </div>
@@ -612,7 +780,14 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
           <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10 space-y-2 animate-fade-in">
             <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Assignment title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
             <div className="grid grid-cols-2 gap-2">
-              <input className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Course" value={newCourse} onChange={(e) => setNewCourse(e.target.value)} />
+              {hasApi && courses.length > 0 ? (
+                <select className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white outline-none" value={newCourse} onChange={(e) => setNewCourse(e.target.value)}>
+                  <option value="">No course</option>
+                  {courses.map((c) => <option key={c.id} value={c.id}>{c.code || c.name}</option>)}
+                </select>
+              ) : (
+                <input className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Course" value={newCourse} onChange={(e) => setNewCourse(e.target.value)} />
+              )}
               <input type="date" className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white outline-none" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
             </div>
             <div className="flex gap-1">
@@ -644,6 +819,7 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
                   <div className="text-xs text-white truncate">{title}</div>
                   <div className="text-[10px] text-zinc-500">{course}{course && dueDate ? " · " : ""}{dueDate && relDate(dueDate)}</div>
                 </div>
+                {dueDate && dueBadge(dueDate, status)}
                 <Badge color={priority === "high" ? "rose" : priority === "medium" ? "amber" : "emerald"}>{priority}</Badge>
                 <button onClick={() => handleDeleteAssignment(id)} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition">✕</button>
               </div>
@@ -671,7 +847,15 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
         <div className="space-y-2 mb-3">
           <input className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none" placeholder="Note title" value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} />
           <textarea className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none resize-none h-16" placeholder="Content (supports markdown)" value={noteContent} onChange={(e) => setNoteContent(e.target.value)} />
-          <button onClick={handleAddNote} disabled={!noteTitle.trim()} className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 disabled:opacity-30 transition">Save Note</button>
+          <div className="flex items-center gap-2">
+            {hasApi && courses.length > 0 && (
+              <select className="rounded-lg bg-white/5 border border-white/10 px-2 py-1.5 text-[10px] text-white outline-none" value={noteCourseId} onChange={(e) => setNoteCourseId(e.target.value)}>
+                <option value="">No course</option>
+                {courses.map((c) => <option key={c.id} value={c.id}>{c.code || c.name}</option>)}
+              </select>
+            )}
+            <button onClick={handleAddNote} disabled={!noteTitle.trim()} className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 disabled:opacity-30 transition">Save Note</button>
+          </div>
         </div>
         <div className="space-y-1.5 max-h-40 overflow-auto">
           {(hasApi ? apiNotes : localNotes.filter((n) => n.tab === "school")).map((n) => {
@@ -684,10 +868,24 @@ function SchoolWidgets({ assignments: localAssignments, notes: localNotes, refre
                   <div className="text-xs font-medium text-white">{title}</div>
                   <div className="text-[10px] text-zinc-400 truncate">{content || "Empty note"}</div>
                 </div>
-                {!hasApi && <button onClick={() => { deleteNote(id); refresh(); }} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>}
+                <button onClick={() => handleDeleteNote(id)} className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs transition shrink-0">✕</button>
               </div>
             );
           })}
+        </div>
+      </Card>
+
+      {/* Agent Quick Actions */}
+      <Card title="Study Actions" icon="🤖">
+        <div className="grid grid-cols-2 gap-1.5">
+          {agentActions.map((act) => (
+            <button key={act.label}
+              className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-[10px] text-zinc-300 hover:bg-violet-500/10 hover:text-violet-400 transition text-left"
+              title={act.label}>
+              <span>{act.icon}</span>
+              <span className="truncate">{act.label}</span>
+            </button>
+          ))}
         </div>
       </Card>
     </div>
