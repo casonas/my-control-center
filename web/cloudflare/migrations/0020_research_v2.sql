@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_research_items_user_score
   ON research_items(user_id, score DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_research_items_dedupe
-  ON research_items(user_id, dedupe_key);
+  ON research_items(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 
 -- Extend research_item_state with archived column
 ALTER TABLE research_item_state ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;

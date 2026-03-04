@@ -2127,10 +2127,9 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
           )}>🧠 Insights</button>
       </div>
 
-      {/* Filter Tabs */}
-      {(activePane === "stream" || typeof window !== "undefined" && window.innerWidth >= 1024) && (
-        <>
-          <div className="flex gap-1 overflow-auto pb-1">
+      {/* Filter Tabs and News Stream - always visible (CSS handles responsive) */}
+      <div className={cx(activePane !== "stream" && "hidden lg:block")}>
+        <div className="flex gap-1 overflow-auto pb-1">
             {(["all", "unread", "saved", "high", "archived"] as const).map((f) => (
               <button key={f} onClick={() => setFilter(f)} className={cx(
                 "px-3 py-1.5 rounded-lg text-xs font-medium border transition whitespace-nowrap capitalize",
@@ -2142,7 +2141,7 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
           </div>
 
           {/* News Stream */}
-          <div className="space-y-2 max-h-[50vh] overflow-auto">
+          <div className="space-y-2 max-h-[50vh] overflow-auto mt-2">
             {displayItems.length === 0 && (
               <div className="text-center py-6 text-xs text-zinc-500">
                 {hasApi ? "No articles. Click Scan Now to fetch feeds." : "No articles in local store."}
@@ -2271,11 +2270,10 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
               );
             })}
           </div>
-        </>
-      )}
+      </div>
 
       {/* Insights Panel (right pane on desktop, toggled on mobile) */}
-      {(activePane === "insights" || typeof window !== "undefined" && window.innerWidth >= 1024) && (
+      <div className={cx(activePane !== "insights" && "hidden lg:block")}>
         <div className="space-y-3">
           {/* Daily Briefing */}
           <Card title="Daily Briefing" icon="📊" actions={
@@ -2361,7 +2359,6 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
             </div>
           </Card>
 
-          {/* Reading Progress */}
           <Card title="Reading Progress" icon="📊">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-zinc-400">{readCount} of {displayItems.length} articles</span>
@@ -2370,7 +2367,7 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
             <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
           </Card>
         </div>
-      )}
+      </div>
     </div>
   );
 }

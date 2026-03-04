@@ -245,6 +245,16 @@ const KNOWN_THREAT_ACTORS = [
   "Charming Kitten", "MuddyWater", "Midnight Blizzard",
 ];
 
+// Pre-compile regexes for performance
+const VENDOR_REGEXES = KNOWN_VENDORS.map((v) => ({
+  name: v,
+  re: new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"),
+}));
+const THREAT_ACTOR_REGEXES = KNOWN_THREAT_ACTORS.map((a) => ({
+  name: a,
+  re: new RegExp(`\\b${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"),
+}));
+
 export function extractEntities(title: string, summary?: string | null): ExtractedEntity[] {
   const text = `${title} ${summary || ""}`;
   const entities: ExtractedEntity[] = [];
@@ -261,23 +271,23 @@ export function extractEntities(title: string, summary?: string | null): Extract
   }
 
   // Vendors / companies
-  for (const vendor of KNOWN_VENDORS) {
-    if (new RegExp(`\\b${vendor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
-      const key = `company:${vendor}`;
+  for (const { name, re } of VENDOR_REGEXES) {
+    if (re.test(text)) {
+      const key = `company:${name}`;
       if (!seen.has(key)) {
         seen.add(key);
-        entities.push({ type: "company", name: vendor, confidence: 0.9 });
+        entities.push({ type: "company", name, confidence: 0.9 });
       }
     }
   }
 
   // Threat actors
-  for (const actor of KNOWN_THREAT_ACTORS) {
-    if (new RegExp(`\\b${actor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
-      const key = `threat_actor:${actor}`;
+  for (const { name, re } of THREAT_ACTOR_REGEXES) {
+    if (re.test(text)) {
+      const key = `threat_actor:${name}`;
       if (!seen.has(key)) {
         seen.add(key);
-        entities.push({ type: "threat_actor", name: actor, confidence: 0.85 });
+        entities.push({ type: "threat_actor", name, confidence: 0.85 });
       }
     }
   }

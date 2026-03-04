@@ -641,34 +641,30 @@ async function runResearchTrendsUpdate(db: D1Database, userId: string): Promise<
     for (const [topic, count] of Object.entries(tagCounts24h)) {
       const weekAvg = (tagCounts7d[topic] || 0) / 7;
       const momentum = weekAvg > 0 ? count / weekAvg : count;
-      const trendId = crypto.randomUUID();
+      const momentumRounded = Math.round(momentum * 100) / 100;
       try {
+        // Delete existing then insert (D1 SQLite upsert workaround)
+        await db.prepare(
+          `DELETE FROM research_trends WHERE user_id = ? AND topic = ? AND window = '24h'`
+        ).bind(userId, topic).run();
         await db.prepare(
           `INSERT INTO research_trends (id, user_id, topic, window, mention_count, momentum_score, updated_at)
-           VALUES (?, ?, ?, '24h', ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET mention_count = ?, momentum_score = ?, updated_at = ?`
-        ).bind(trendId, userId, topic, count, Math.round(momentum * 100) / 100, now, count, Math.round(momentum * 100) / 100, now).run();
+           VALUES (?, ?, ?, '24h', ?, ?, ?)`
+        ).bind(crypto.randomUUID(), userId, topic, count, momentumRounded, now).run();
         updated++;
-      } catch {
-        // Try update by topic instead if ID collision
-        try {
-          await db.prepare(
-            `UPDATE research_trends SET mention_count = ?, momentum_score = ?, updated_at = ?
-             WHERE user_id = ? AND topic = ? AND window = '24h'`
-          ).bind(count, Math.round(momentum * 100) / 100, now, userId, topic).run();
-        } catch { /* non-critical */ }
-      }
+      } catch { /* non-critical */ }
     }
 
     // Upsert trends for 7d window
     for (const [topic, count] of Object.entries(tagCounts7d)) {
-      const trendId = crypto.randomUUID();
       try {
         await db.prepare(
+          `DELETE FROM research_trends WHERE user_id = ? AND topic = ? AND window = '7d'`
+        ).bind(userId, topic).run();
+        await db.prepare(
           `INSERT INTO research_trends (id, user_id, topic, window, mention_count, momentum_score, updated_at)
-           VALUES (?, ?, ?, '7d', ?, 1.0, ?)
-           ON CONFLICT(id) DO UPDATE SET mention_count = ?, updated_at = ?`
-        ).bind(trendId, userId, topic, count, now, count, now).run();
+           VALUES (?, ?, ?, '7d', ?, 1.0, ?)`
+        ).bind(crypto.randomUUID(), userId, topic, count, now).run();
       } catch { /* non-critical */ }
     }
   } catch (err) {
