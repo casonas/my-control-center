@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState, useRef, useCallback } from "react"
 import Login from "../components/Login";
 import WidgetPanel from "../components/WidgetPanel";
 import type { LessonClickInfo } from "../components/WidgetPanel";
-import { apiGet, apiPost, streamChat, authMe, logout } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, apiFetch, streamChat, authMe, logout } from "@/lib/api";
 import { TABS, type TabKey, type Agent, type Msg, type Note } from "@/lib/types";
 import { getNotes, saveNote, deleteNote, searchAll } from "@/lib/store";
 import type { Doc } from "@/lib/store";
@@ -65,6 +65,7 @@ const MessageInput = React.memo(function MessageInput({
   gradient,
   suggestedText,
   onSuggestionConsumed,
+  onFileUpload,
 }: {
   onSend: (text: string) => void;
   busy: boolean;
@@ -72,9 +73,11 @@ const MessageInput = React.memo(function MessageInput({
   gradient: string;
   suggestedText: string;
   onSuggestionConsumed: () => void;
+  onFileUpload?: (file: File) => void;
 }) {
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // "Adjusting state during render" pattern — avoids useEffect + setState lint error.
   // React re-renders once more with the new text; no cascading effects.
@@ -114,7 +117,29 @@ const MessageInput = React.memo(function MessageInput({
   }
 
   return (
-    <div className="p-3 border-t border-white/5 flex gap-2 items-end">
+    <div className="shrink-0 p-3 border-t border-white/5 flex gap-2 items-end">
+      {onFileUpload && (
+        <>
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            accept=".pdf,.txt,.md,.csv,.json,.zip,.png,.jpg,.jpeg,.gif,.webp,.docx,.xlsx"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onFileUpload(f);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="rounded-xl bg-white/5 border border-white/10 px-2.5 py-2.5 text-sm text-zinc-400 hover:text-white hover:bg-white/10 transition shrink-0"
+            title="Attach file"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+          >📎</button>
+        </>
+      )}
       <textarea
         ref={inputRef}
         rows={1}
@@ -242,7 +267,73 @@ export default function Home() {
     setSessionsOpen(false);
   }
 
-  /* ─── Lesson-specific chat threads ─── */
+  /* ─── File upload ─── */
+  interface FileItem { id: string; name: string; mime: string; size: number; created_at: string }
+  const [chatFiles, setChatFiles] = useState<FileItem[]>([]);
+
+  const loadChatFiles = useCallback(async (sessionId: string) => {
+    try {
+      const d = await apiGet<{ files: FileItem[] }>(`/files?scopeType=chat_session&scopeId=${encodeURIComponent(sessionId)}`);
+      setChatFiles(d.files || []);
+    } catch { setChatFiles([]); }
+  }, []);
+
+  useEffect(() => {
+    if (conversationId) loadChatFiles(conversationId);
+    else setChatFiles([]);
+  }, [conversationId, loadChatFiles]);
+
+  async function handleFileUpload(file: File) {
+    if (!conversationId) return;
+    setError(null);
+    try {
+      const meta = await apiPost<{ ok: boolean; fileId: string; storageKey: string; uploadUrl: string; error?: string }>("/files", {
+        name: file.name,
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        scope: { type: "chat_session", id: conversationId },
+      });
+      if (!meta.ok) { setError(meta.error || "Upload failed"); return; }
+      const csrf = typeof window !== "undefined" ? localStorage.getItem("mcc.csrf") : null;
+      const headers: Record<string, string> = { "Content-Type": file.type || "application/octet-stream" };
+      if (csrf) headers["X-CSRF"] = csrf;
+      await apiFetch(`/files/${meta.fileId}/upload`, {
+        method: "PUT",
+        headers,
+        body: file,
+      });
+      loadChatFiles(conversationId);
+      setMessages((m) => [...m, { role: "user", content: `📎 Uploaded: ${file.name}` }]);
+      chatOnNewMessage();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Upload failed");
+    }
+  }
+
+  /* ─── Chat history management ─── */
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
+  async function handleRenameSession(sessionId: string, newTitle: string) {
+    if (!newTitle.trim()) return;
+    try {
+      await apiPatch(`/chat/sessions/${sessionId}`, { title: newTitle.trim() });
+      loadSessions(activeAgentId);
+    } catch { /* non-fatal */ }
+    setEditingSessionId(null);
+    setEditingTitle("");
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    try {
+      await apiDelete(`/chat/sessions/${sessionId}`);
+      if (conversationId === sessionId) {
+        setConversationId(null);
+        setMessages([]);
+      }
+      loadSessions(activeAgentId);
+    } catch { /* non-fatal */ }
+  }
   const [lessonContext, setLessonContext] = useState<LessonClickInfo | null>(null);
 
   const openLessonChat = useCallback(async (info: LessonClickInfo) => {
@@ -542,7 +633,7 @@ export default function Home() {
      ═══════════════════════════════════════════════════ */
   function Header() {
     return (
-      <header className="sticky top-0 z-40 glass border-b border-white/5">
+      <header className="shrink-0 z-40 glass border-b border-white/5">
         <div className="mx-auto max-w-[1600px] px-4 py-2.5 flex items-center gap-3">
           {/* Mobile menu */}
           <button className="md:hidden rounded-lg bg-white/5 px-2.5 py-2 text-sm hover:bg-white/10 transition" onClick={() => setSidebarOpen((s) => !s)} aria-label="Toggle sidebar">☰</button>
@@ -813,7 +904,7 @@ export default function Home() {
     const suggestions = suggestionsMap[activeTab] || suggestionsMap.home;
 
     return (
-      <section className={cx("glass-light rounded-2xl flex flex-col h-full", glowMap[activeTab])}>
+      <section className={cx("glass-light rounded-2xl flex flex-col h-full min-h-0", glowMap[activeTab])}>
         {/* A) Sticky header with session controls */}
         <div className="shrink-0 p-3 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -859,19 +950,41 @@ export default function Home() {
               <div className="text-[10px] text-zinc-500 text-center py-3">No saved sessions</div>
             )}
             {chatSessions.map((s) => (
-              <button
+              <div
                 key={s.id}
-                onClick={() => handleSelectSession(s.id)}
                 className={cx(
-                  "w-full text-left px-3 py-2 text-xs transition hover:bg-white/5 flex items-center gap-2",
+                  "px-3 py-2 text-xs transition hover:bg-white/5 flex items-center gap-2 group",
                   s.id === conversationId ? "text-white bg-white/5" : "text-zinc-400"
                 )}
               >
-                {s.pinned ? "📌 " : ""}{s.title}
-                <span className="ml-auto text-[9px] text-zinc-600 shrink-0">
+                {editingSessionId === s.id ? (
+                  <input
+                    autoFocus
+                    className="flex-1 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white outline-none"
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleRenameSession(s.id, editingTitle); if (e.key === "Escape") setEditingSessionId(null); }}
+                    onBlur={() => handleRenameSession(s.id, editingTitle)}
+                  />
+                ) : (
+                  <button onClick={() => handleSelectSession(s.id)} className="flex-1 text-left truncate min-w-0">
+                    {s.pinned ? "📌 " : ""}{s.title}
+                  </button>
+                )}
+                <span className="text-[9px] text-zinc-600 shrink-0">
                   {new Date(s.updated_at).toLocaleDateString()}
                 </span>
-              </button>
+                <button
+                  onClick={() => { setEditingSessionId(s.id); setEditingTitle(s.title); }}
+                  className="text-[10px] text-zinc-500 hover:text-white opacity-0 group-hover:opacity-100 transition shrink-0"
+                  title="Rename"
+                >✏️</button>
+                <button
+                  onClick={() => { if (confirm("Delete this chat and all its messages?")) handleDeleteSession(s.id); }}
+                  className="text-[10px] text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition shrink-0"
+                  title="Delete"
+                >🗑️</button>
+              </div>
             ))}
           </div>
         )}
@@ -900,7 +1013,7 @@ export default function Home() {
           {messages.map((m, idx) => (
             <div key={idx} className={cx("max-w-[88%] animate-fade-in", m.role === "user" && "ml-auto")}>
               <div className={cx(
-                "rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap",
+                "rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words overflow-hidden",
                 m.role === "user"
                   ? `bg-gradient-to-r ${tabMeta.gradient} text-white`
                   : "bg-white/5 text-zinc-200 border border-white/5"
@@ -935,6 +1048,25 @@ export default function Home() {
           </div>
         )}
 
+        {/* File attachments */}
+        {chatFiles.length > 0 && (
+          <div className="shrink-0 px-3 py-2 border-t border-white/5 flex gap-2 overflow-x-auto">
+            {chatFiles.map((f) => (
+              <a
+                key={f.id}
+                href={`/api/files/${f.id}/download`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 rounded-lg bg-white/5 border border-white/10 px-2.5 py-1.5 text-[10px] text-zinc-300 hover:bg-white/10 transition shrink-0"
+                title={`Download ${f.name}`}
+              >
+                📄 <span className="truncate max-w-[100px]">{f.name}</span>
+                <span className="text-zinc-500">{f.size < 1024 ? `${f.size}B` : `${Math.round(f.size / 1024)}KB`}</span>
+              </a>
+            ))}
+          </div>
+        )}
+
         {/* C) Sticky input */}
         <MessageInput
           onSend={send}
@@ -943,6 +1075,7 @@ export default function Home() {
           gradient={tabMeta.gradient}
           suggestedText={suggestedText}
           onSuggestionConsumed={clearSuggestion}
+          onFileUpload={handleFileUpload}
         />
       </section>
     );
@@ -1238,7 +1371,7 @@ export default function Home() {
           {/* Desktop: side-by-side dual-pane, internal scroll only */}
           <div className="hidden md:grid md:grid-cols-[1fr_420px] gap-4 flex-1 min-h-0">
             {ChatPanel()}
-            <div className="overflow-y-auto space-y-3 pb-4">
+            <div className="overflow-y-auto min-h-0 space-y-3 pb-4">
               <WidgetPanel activeTab={activeTab} onLessonClick={openLessonChat} />
             </div>
           </div>

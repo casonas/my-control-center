@@ -32,7 +32,7 @@ type R2ObjectLike = {
 };
 
 export type R2BucketLike = {
-  put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob) => Promise<unknown>;
+  put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob, options?: { httpMetadata?: { contentType?: string } }) => Promise<unknown>;
   get: (key: string) => Promise<R2ObjectLike | null>;
   delete: (key: string) => Promise<unknown>;
 };

@@ -827,8 +827,23 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
     try { await apiPatch(`/skills/roadmap/${roadmapId}`, { status }); loadRoadmap(); } catch { /* */ }
   }
 
-  async function handleSuggestionAction(id: string, status: string) {
-    try { await apiPatch("/skills/suggestions", { id, status }); loadSuggestions(); } catch { /* */ }
+  async function handleSuggestionAction(id: string, status: string, saveToLessons = false) {
+    try {
+      const res = await apiPatch<{ ok: boolean; replacement?: Suggestion; lessonCreated?: boolean }>("/skills/suggestions", { id, status, saveToLessons });
+      // If a replacement suggestion was returned, swap it in-place
+      if (res.replacement) {
+        setSuggestions((prev) => {
+          const idx = prev.findIndex((s) => s.id === id);
+          const rep = res.replacement as Suggestion;
+          if (idx >= 0) { const next = [...prev]; next[idx] = rep; return next; }
+          return [...prev, rep];
+        });
+      } else {
+        setSuggestions((prev) => prev.filter((s) => s.id !== id));
+      }
+      // Refresh roadmap if a lesson was created
+      if (res.lessonCreated) loadRoadmap();
+    } catch { /* non-fatal */ }
   }
 
   // Merge: prefer API roadmap; fallback to local
@@ -1003,6 +1018,8 @@ function SkillsWidgets({ skills: localSkills, refresh, onLessonClick }: { skills
                 <div className="flex gap-2 mt-2">
                   <button onClick={() => handleSuggestionAction(s.id, "saved")}
                     className="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 text-[10px] hover:bg-emerald-500/30 transition">Save</button>
+                  <button onClick={() => handleSuggestionAction(s.id, "saved", true)}
+                    className="px-2 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 text-[10px] hover:bg-indigo-500/30 transition">Save to Lessons</button>
                   <button onClick={() => handleSuggestionAction(s.id, "dismissed")}
                     className="px-2 py-1 rounded-lg bg-white/5 text-zinc-400 text-[10px] hover:bg-white/10 transition">Dismiss</button>
                 </div>
