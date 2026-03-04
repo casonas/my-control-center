@@ -1,9 +1,9 @@
 export const runtime = "edge";
-// web/app/api/research/scan/route.ts — Trigger real RSS scan
+// web/app/api/research/scan/route.ts — Trigger real RSS scan with v2 scoring
 
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
-import { parseFeed, inferTags, DEFAULT_SOURCES } from "@/lib/rss";
+import { parseFeed, processFeedItem, DEFAULT_SOURCES } from "@/lib/rss";
 
 const SCAN_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -49,8 +49,8 @@ export async function POST(req: Request) {
         for (const src of DEFAULT_SOURCES) {
           const id = crypto.randomUUID();
           await db
-            .prepare(`INSERT OR IGNORE INTO research_sources (id, user_id, name, url, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)`)
-            .bind(id, userId, src.name, src.url, now)
+            .prepare(`INSERT OR IGNORE INTO research_sources (id, user_id, name, url, enabled, category, reliability_score, created_at) VALUES (?, ?, ?, ?, 1, ?, 70, ?)`)
+            .bind(id, userId, src.name, src.url, src.category || "cyber", now)
             .run();
         }
         const refreshed = await db
@@ -62,45 +62,81 @@ export async function POST(req: Request) {
 
       // Fetch each feed
       let newItems = 0;
+      let entitiesLinked = 0;
       const now = new Date().toISOString();
 
       for (const source of sources) {
         try {
           const res = await fetch(source.url, {
             signal: AbortSignal.timeout(8000),
-            headers: { "User-Agent": "MCC-Research/1.0" },
+            headers: { "User-Agent": "MCC-Research/2.0" },
           });
           if (!res.ok) continue;
 
           const xml = await res.text();
           const items = parseFeed(xml);
 
-          for (const item of items) {
-            if (!item.url || !item.title) continue;
+          for (const rawItem of items) {
+            if (!rawItem.url || !rawItem.title) continue;
 
+            const processed = processFeedItem(rawItem);
             const id = crypto.randomUUID();
-            const tags = inferTags(item.title);
 
             try {
               await db
                 .prepare(
                   `INSERT OR IGNORE INTO research_items
-                   (id, user_id, source_id, title, url, published_at, fetched_at, summary, tags_json, score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+                   (id, user_id, source_id, title, url, published_at, fetched_at, summary, tags_json, score, urgency, item_type, dedupe_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 )
                 .bind(
                   id,
                   userId,
                   source.id,
-                  item.title,
-                  item.url,
-                  item.publishedAt,
+                  processed.title,
+                  processed.url,
+                  processed.publishedAt,
                   now,
-                  item.summary,
-                  JSON.stringify(tags)
+                  processed.summary,
+                  JSON.stringify(processed.tags),
+                  processed.score,
+                  processed.urgency,
+                  processed.itemType,
+                  processed.dedupeKey
                 )
                 .run();
               newItems++;
+
+              // Link entities
+              for (const entity of processed.entities) {
+                try {
+                  // Upsert entity
+                  const entityId = crypto.randomUUID();
+                  await db
+                    .prepare(
+                      `INSERT OR IGNORE INTO research_entities (id, user_id, type, name, watch, created_at)
+                       VALUES (?, ?, ?, ?, 0, ?)`
+                    )
+                    .bind(entityId, userId, entity.type, entity.name, now)
+                    .run();
+
+                  // Get actual entity id (may already exist)
+                  const existing = await db
+                    .prepare(`SELECT id FROM research_entities WHERE user_id = ? AND type = ? AND name = ?`)
+                    .bind(userId, entity.type, entity.name)
+                    .first<{ id: string }>();
+
+                  if (existing) {
+                    await db
+                      .prepare(`INSERT OR IGNORE INTO research_item_entities (item_id, entity_id, confidence) VALUES (?, ?, ?)`)
+                      .bind(id, existing.id, entity.confidence)
+                      .run();
+                    entitiesLinked++;
+                  }
+                } catch {
+                  // Non-critical entity linking failure
+                }
+              }
             } catch {
               // Duplicate URL — expected via UNIQUE constraint
             }
@@ -122,6 +158,7 @@ export async function POST(req: Request) {
       return Response.json({
         ok: true,
         newItems,
+        entitiesLinked,
         sources: sources.length,
         tookMs: Date.now() - start,
       });

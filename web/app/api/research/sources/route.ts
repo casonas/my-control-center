@@ -1,5 +1,5 @@
 export const runtime = "edge";
-// web/app/api/research/sources/route.ts — List / manage research RSS sources
+// web/app/api/research/sources/route.ts — List / manage research RSS sources (v2)
 
 import { withReadAuth } from "@/lib/readAuth";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
@@ -22,6 +22,34 @@ export async function GET() {
   });
 }
 
+export async function POST(req: Request) {
+  return withMutatingAuth(req, async ({ session }) => {
+    const db = getD1();
+    if (!db) return Response.json({ error: "D1 not available" }, { status: 500 });
+
+    try {
+      const body = await req.json() as { name: string; url: string; category?: string };
+      if (!body.name || !body.url) {
+        return Response.json({ error: "name and url required" }, { status: 400 });
+      }
+
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      await db
+        .prepare(
+          `INSERT INTO research_sources (id, user_id, name, url, enabled, category, reliability_score, created_at)
+           VALUES (?, ?, ?, ?, 1, ?, 70, ?)`
+        )
+        .bind(id, session.user_id, body.name, body.url, body.category || "cyber", now)
+        .run();
+
+      return Response.json({ ok: true, id });
+    } catch (err) {
+      return d1ErrorResponse("POST /api/research/sources", err);
+    }
+  });
+}
+
 export async function PATCH(req: Request) {
   return withMutatingAuth(req, async ({ session }) => {
     const db = getD1();
@@ -33,13 +61,17 @@ export async function PATCH(req: Request) {
         id?: string;
         name?: string;
         url?: string;
+        category?: string;
       };
 
       if (body.action === "add" && body.name && body.url) {
         const id = crypto.randomUUID();
         await db
-          .prepare(`INSERT INTO research_sources (id, user_id, name, url, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)`)
-          .bind(id, session.user_id, body.name, body.url, new Date().toISOString())
+          .prepare(
+            `INSERT INTO research_sources (id, user_id, name, url, enabled, category, reliability_score, created_at)
+             VALUES (?, ?, ?, ?, 1, ?, 70, ?)`
+          )
+          .bind(id, session.user_id, body.name, body.url, body.category || "cyber", new Date().toISOString())
           .run();
         return Response.json({ ok: true, id });
       }
