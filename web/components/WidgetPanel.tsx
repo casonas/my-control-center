@@ -543,23 +543,34 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
   const [statusFilter, setStatusFilter] = useState("all");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+
+  // Outreach draft state
+  const [draftingJobId, setDraftingJobId] = useState<string | null>(null);
+  const [draftResult, setDraftResult] = useState<{ subject: string; body_md: string } | null>(null);
 
   // API-backed data
   interface ApiJob {
     id: string; title: string; company: string; location?: string;
     url: string; status: string; posted_at?: string; fetched_at: string;
-    remote?: number; tags_json?: string; notes?: string;
+    remote?: number; remote_flag?: string; tags_json?: string; notes?: string;
+    match_score?: number; why_match?: string;
   }
   const [apiJobs, setApiJobs] = useState<ApiJob[]>([]);
   const [pipeline, setPipeline] = useState<Record<string, number>>({});
   interface ApiCompany { id: string; name: string; website_url?: string; linkedin_url?: string; notes?: string }
   const [companies, setCompanies] = useState<ApiCompany[]>([]);
+  interface WatchCompany { id: string; company_name: string; tier: string; source?: string; notes?: string; matching_jobs?: number }
+  const [watchCompanies, setWatchCompanies] = useState<WatchCompany[]>([]);
+  interface ApiTemplate { id: string; name: string; subject: string; body_md: string }
+  const [templates, setTemplates] = useState<ApiTemplate[]>([]);
   const [hasApi, setHasApi] = useState(false);
 
   const loadJobs = useCallback(async (status: string) => {
     try {
-      const data = await apiGet<{ items: ApiJob[] }>(`/jobs/feed?status=${status}&limit=50`);
+      const data = await apiGet<{ items: ApiJob[]; lastRefresh?: string }>(`/jobs/feed?status=${status}&limit=50`);
       if (data.items) { setApiJobs(data.items); setHasApi(true); }
+      if (data.lastRefresh) setLastRefresh(data.lastRefresh);
     } catch { setHasApi(false); }
   }, []);
 
@@ -577,13 +588,34 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
     } catch { /* non-fatal */ }
   }, []);
 
-  useEffect(() => { loadJobs(statusFilter); loadPipeline(); loadCompanies(); }, [statusFilter, loadJobs, loadPipeline, loadCompanies]);
+  const loadWatchCompanies = useCallback(async () => {
+    try {
+      const data = await apiGet<{ companies: WatchCompany[] }>("/companies/watch");
+      if (data.companies) setWatchCompanies(data.companies);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const data = await apiGet<{ templates: ApiTemplate[] }>("/templates");
+      if (data.templates) setTemplates(data.templates);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => { loadJobs(statusFilter); loadPipeline(); loadCompanies(); loadWatchCompanies(); loadTemplates(); }, [statusFilter, loadJobs, loadPipeline, loadCompanies, loadWatchCompanies, loadTemplates]);
 
   async function handleRefresh() {
     setRefreshing(true); setRefreshResult(null);
     try {
-      const data = await apiPost<{ ok: boolean; newJobs?: number; error?: string }>("/jobs/refresh", {});
-      setRefreshResult(data.ok ? `Found ${data.newJobs || 0} new jobs` : (data.error || "Failed"));
+      const data = await apiPost<{ ok: boolean; newJobs?: number; inserted?: number; scored?: number; failedSources?: number; error?: string }>("/jobs/refresh", {});
+      if (data.ok) {
+        const parts = [`${data.inserted || data.newJobs || 0} new`];
+        if (data.scored) parts.push(`${data.scored} scored`);
+        if (data.failedSources) parts.push(`${data.failedSources} source errors`);
+        setRefreshResult(parts.join(", "));
+      } else {
+        setRefreshResult(data.error || "Failed");
+      }
       loadJobs(statusFilter); loadPipeline();
     } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); }
     finally { setRefreshing(false); }
@@ -592,6 +624,23 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
   async function handleStatusChange(jobId: string, newStatus: string) {
     try { await apiPatch(`/jobs/${jobId}`, { status: newStatus }); loadJobs(statusFilter); loadPipeline(); }
     catch { /* fallback */ toggleJobApplied(jobId); refresh(); }
+  }
+
+  async function handleAddToWatch(companyName: string) {
+    try {
+      await apiPost("/companies/watch", { company_name: companyName, tier: "emerging", source: "manual" });
+      loadWatchCompanies();
+    } catch { /* non-fatal */ }
+  }
+
+  async function handleDraftOutreach(jobId: string) {
+    if (templates.length === 0) return;
+    setDraftingJobId(jobId);
+    setDraftResult(null);
+    try {
+      const data = await apiPost<{ ok: boolean; subject: string; body_md: string }>("/outreach/draft", { job_id: jobId, template_id: templates[0].id });
+      if (data.ok) setDraftResult({ subject: data.subject, body_md: data.body_md });
+    } catch { /* non-fatal */ }
   }
 
   function handleAdd() {
@@ -608,13 +657,23 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
     tags_json: JSON.stringify(j.tags),
   }));
 
-  const pSaved = pipeline.saved || pipeline.new || 0;
+  const pSaved = pipeline.saved || 0;
   const pNew = pipeline.new || 0;
   const pApplied = pipeline.applied || 0;
   const pInterview = pipeline.interview || 0;
   const pOffer = pipeline.offer || 0;
+  const pRejected = pipeline.rejected || 0;
 
   const statuses = ["all", "new", "saved", "applied", "interview", "offer", "rejected", "dismissed"];
+
+  function scoreColor(score?: number) {
+    if (!score) return "zinc";
+    if (score >= 40) return "emerald";
+    if (score >= 20) return "amber";
+    return "zinc";
+  }
+
+  const lastRefreshLabel = lastRefresh ? new Date(lastRefresh).toLocaleString() : "Never";
 
   return (
     <div className="space-y-3">
@@ -624,11 +683,12 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
         <StatBox icon="🆕" value={pNew + pSaved} label="New/Saved" />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <button onClick={handleRefresh} disabled={refreshing}
           className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-medium hover:bg-emerald-500/30 disabled:opacity-50 transition">
           {refreshing ? "Refreshing…" : "🔄 Refresh Feed"}
         </button>
+        <span className="text-[10px] text-zinc-500">Last: {lastRefreshLabel}</span>
         {refreshResult && <span className="text-[10px] text-zinc-400">{refreshResult}</span>}
       </div>
 
@@ -643,6 +703,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
             { label: "Applied", val: pApplied, color: "cyan" },
             { label: "Interview", val: pInterview, color: "violet" },
             { label: "Offer", val: pOffer, color: "amber" },
+            { label: "Rejected", val: pRejected, color: "rose" },
           ].map((s) => (
             <div key={s.label} className={`flex-1 text-center rounded-lg bg-${s.color}-500/10 py-2`}>
               <div className={`text-sm font-bold text-${s.color}-400`}>{s.val}</div>
@@ -685,6 +746,8 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
           )}
           {displayJobs.map((j) => {
             const jobTags: string[] = j.tags_json ? JSON.parse(j.tags_json) : [];
+            const ms = (j as ApiJob).match_score;
+            const wm = (j as ApiJob).why_match;
             return (
             <div key={j.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
@@ -692,21 +755,27 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
                   {j.company.charAt(0)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <a href={j.url || "#"} target="_blank" rel="noopener noreferrer"
-                    className="text-xs font-semibold text-white hover:underline">
-                    {j.title} {j.url ? "↗" : ""}
-                  </a>
-                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    <Badge color={j.status === "applied" ? "cyan" : j.status === "interview" ? "violet" : "emerald"}>{j.status}</Badge>
-                    {jobTags.map((t: string) => <Badge key={t} color="zinc">{t}</Badge>)}
+                  <div className="flex items-center gap-2">
+                    <a href={j.url || "#"} target="_blank" rel="noopener noreferrer"
+                      className="text-xs font-semibold text-white hover:underline">
+                      {j.title} {j.url ? "↗" : ""}
+                    </a>
+                    {ms != null && ms > 0 && <Badge color={scoreColor(ms)}>{ms}%</Badge>}
                   </div>
-                  {/* LinkedIn links */}
+                  <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
+                  {wm && <div className="text-[10px] text-zinc-500 mt-0.5">{wm}</div>}
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    <Badge color={j.status === "applied" ? "cyan" : j.status === "interview" ? "violet" : j.status === "rejected" ? "rose" : "emerald"}>{j.status}</Badge>
+                    {jobTags.slice(0, 4).map((t: string) => <Badge key={t} color="zinc">{t}</Badge>)}
+                  </div>
+                  {/* Action links */}
                   <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition">
                     <a href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(j.title + " " + j.company)}`}
-                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🔗 LinkedIn Jobs</a>
-                    <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(j.company)}`}
-                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🏢 Company</a>
+                      target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🔗 LinkedIn</a>
+                    <button onClick={() => handleAddToWatch(j.company)} className="text-[9px] text-amber-400 hover:underline">⭐ Watch</button>
+                    {templates.length > 0 && (
+                      <button onClick={() => handleDraftOutreach(j.id)} className="text-[9px] text-violet-400 hover:underline">📨 Draft</button>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col gap-1 shrink-0">
@@ -730,11 +799,36 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
         </div>
       </Card>
 
-      {/* Companies Watchlist */}
+      {/* Outreach Draft Modal */}
+      {draftingJobId && draftResult && (
+        <Card title="Outreach Draft" icon="📨" actions={
+          <button onClick={() => { setDraftingJobId(null); setDraftResult(null); }} className="text-[10px] px-2 py-1 rounded-lg bg-white/5 text-zinc-400 hover:bg-white/10 transition">Close</button>
+        }>
+          <div className="space-y-2">
+            <div className="text-[10px] text-zinc-400">Subject:</div>
+            <div className="text-xs text-white bg-white/5 rounded-lg p-2">{draftResult.subject}</div>
+            <div className="text-[10px] text-zinc-400">Body:</div>
+            <div className="text-xs text-zinc-300 bg-white/5 rounded-lg p-2 whitespace-pre-wrap max-h-40 overflow-auto">{draftResult.body_md}</div>
+            <button onClick={() => { navigator.clipboard.writeText(`Subject: ${draftResult.subject}\n\n${draftResult.body_md}`); }}
+              className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 transition">📋 Copy to Clipboard</button>
+          </div>
+        </Card>
+      )}
+
+      {/* Companies to Watch */}
       <Card title="Companies to Watch" icon="🏢">
-        <div className="space-y-1.5 max-h-40 overflow-auto">
-          {companies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
-          {companies.map((c) => (
+        <div className="space-y-1.5 max-h-48 overflow-auto">
+          {watchCompanies.length === 0 && companies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
+          {watchCompanies.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2" onClick={() => setStatusFilter("all")}>
+              <Badge color={c.tier === "big" ? "cyan" : "amber"}>{c.tier}</Badge>
+              <span className="text-xs text-white flex-1">{c.company_name}</span>
+              {(c.matching_jobs ?? 0) > 0 && <span className="text-[9px] text-emerald-400">{c.matching_jobs} jobs</span>}
+              <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.company_name)}`}
+                target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">LinkedIn</a>
+            </div>
+          ))}
+          {watchCompanies.length === 0 && companies.map((c) => (
             <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
               <span className="text-xs text-white flex-1">{c.name}</span>
               {c.website_url && <a href={c.website_url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-zinc-400 hover:text-white">🌐</a>}
@@ -745,11 +839,13 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
         </div>
       </Card>
 
-      {/* Outreach */}
+      {/* Outreach Templates */}
       <Card title="Outreach Templates" icon="📨">
         <div className="space-y-1.5">
-          {["Cold Email — Hiring Manager", "LinkedIn Connection Request", "Follow-up After Application", "Thank You — Post Interview"].map((t) => (
-            <button key={t} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition">{t}</button>
+          {templates.length > 0 ? templates.map((t) => (
+            <div key={t.id} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition">{t.name}</div>
+          )) : ["Cold Email — Hiring Manager", "LinkedIn Connection Request", "Follow-up After Application", "Thank You — Post Interview"].map((t) => (
+            <div key={t} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition">{t}</div>
           ))}
         </div>
       </Card>

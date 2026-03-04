@@ -179,6 +179,41 @@ async function runStocksNewsScan(db: D1Database, userId: string): Promise<{ item
   return { items: newItems, failed: sourcesFailed };
 }
 
+// ─── Inline scoring engine (Workers can't import from Pages) ──────
+const ROLE_KW = [
+  { re: /\bsecurity analyst\b/i, w: 20 }, { re: /\bsoc analyst\b/i, w: 20 },
+  { re: /\bthreat hunt/i, w: 18 }, { re: /\bincident response\b/i, w: 16 },
+  { re: /\binformation security\b/i, w: 15 }, { re: /\bcyber/i, w: 14 },
+  { re: /\bcompliance analyst\b/i, w: 12 }, { re: /\bdata scientist?\b/i, w: 10 },
+  { re: /\banalyst\b/i, w: 8 },
+];
+const SKILL_KW = [
+  { re: /\bpython\b/i, w: 8 }, { re: /\bsplunk\b/i, w: 8 }, { re: /\bsiem\b/i, w: 8 },
+  { re: /\blog analysis\b/i, w: 6 }, { re: /\bdetection\b/i, w: 5 },
+  { re: /\bdata\b/i, w: 3 },
+];
+const EXP_BOOST = [{ re: /\bjunior\b/i, d: 8 }, { re: /\bentry[- ]level\b/i, d: 10 }, { re: /\bassociate\b/i, d: 6 }];
+const EXP_PEN = [{ re: /\bsenior\b/i, d: -10 }, { re: /\bprincipal\b/i, d: -15 }, { re: /\bdirector\b/i, d: -15 }];
+
+function scoreJobInline(title: string, company: string, location: string | null): { score: number; why: string; tags: string } {
+  const text = `${title} ${company} ${location || ""}`.toLowerCase();
+  let score = 0; const reasons: string[] = []; const tags: string[] = [];
+  for (const k of ROLE_KW) if (k.re.test(text)) { score += k.w; reasons.push(k.re.source.replace(/\\b/g, "")); tags.push(k.re.source.replace(/\\b/g, "")); }
+  for (const k of SKILL_KW) if (k.re.test(text)) { score += k.w; tags.push(k.re.source.replace(/\\b/g, "")); }
+  for (const e of EXP_BOOST) if (e.re.test(text)) { score += e.d; break; }
+  for (const e of EXP_PEN) if (e.re.test(text)) { score += e.d; break; }
+  if (/\bremote\b/i.test(text) || /\bhybrid\b/i.test(text)) { score += 5; tags.push("remote-friendly"); }
+  const fs = Math.max(0, Math.min(100, score));
+  return { score: fs, why: reasons.length > 0 ? `Matches: ${reasons.slice(0, 4).join(", ")}` : "No strong keyword matches", tags: JSON.stringify([...new Set(tags)]) };
+}
+
+function detectRemote(title: string, location: string | null): string {
+  const t = `${title} ${location || ""}`.toLowerCase();
+  if (/\bremote\b/.test(t)) return "1";
+  if (/\bon[- ]?site\b/.test(t)) return "0";
+  return "unknown";
+}
+
 async function runJobsRefresh(db: D1Database, userId: string): Promise<{ items: number; failed: number }> {
   let newJobs = 0, sourcesFailed = 0;
   const sources = await db.prepare(`SELECT id, url, type FROM job_sources WHERE user_id = ? AND enabled = 1`).bind(userId).all();
@@ -192,9 +227,16 @@ async function runJobsRefresh(db: D1Database, userId: string): Promise<{ items: 
       for (const item of parseFeedItems(xml)) {
         if (!item.url || !item.title) continue;
         const dedupeKey = item.url.replace(/[?#].*$/, "").toLowerCase();
+        const companyMatch = item.title.match(/(?:at|@|-|–|—)\s*(.+?)(?:\s*\(|$)/i);
+        const company = companyMatch ? companyMatch[1].trim() : "Unknown";
+        const title = item.title.replace(/(?:at|@)\s*.+$/, "").trim() || item.title;
+        const rf = detectRemote(title, null);
+        const scoring = scoreJobInline(title, company, null);
         try {
-          await db.prepare(`INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key) VALUES (?, ?, ?, ?, 'Unknown', ?, ?, ?, 'new', ?)`)
-            .bind(crypto.randomUUID(), userId, String(src.id), item.title, item.url, item.publishedAt, now, dedupeKey).run();
+          await db.prepare(
+            `INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key, match_score, why_match, tags_json, remote_flag)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)`
+          ).bind(crypto.randomUUID(), userId, String(src.id), title, company, item.url, item.publishedAt, now, dedupeKey, scoring.score, scoring.why, scoring.tags, rf).run();
           newJobs++;
         } catch { /* dedupe */ }
       }
