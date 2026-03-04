@@ -906,109 +906,194 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [staleData, setStaleData] = useState(false);
 
-  // Outreach draft state
-  const [draftingJobId, setDraftingJobId] = useState<string | null>(null);
-  const [draftResult, setDraftResult] = useState<{ subject: string; body_md: string } | null>(null);
+  // Outreach state (external API flow)
+  const [outreachJob, setOutreachJob] = useState<{ title: string; company: string } | null>(null);
+  const [outreachTemplates, setOutreachTemplates] = useState<string[]>([]);
+  const [outreachResult, setOutreachResult] = useState<{ subject?: string; body_md?: string; message?: string } | null>(null);
+  const [outreachError, setOutreachError] = useState<string | null>(null);
+  const [outreachLoading, setOutreachLoading] = useState(false);
 
   // API-backed data
   interface ApiJob {
     id: string; title: string; company: string; location?: string;
-    url: string; status: string; posted_at?: string; fetched_at: string;
+    url: string; status: string; posted_at?: string; fetched_at?: string;
     remote?: number; remote_flag?: string; tags_json?: string; notes?: string;
-    match_score?: number; why_match?: string; match_factors_json?: string;
+    match_score?: number; fit_score?: number; why_match?: string; risks?: string; match_factors_json?: string;
   }
   const [apiJobs, setApiJobs] = useState<ApiJob[]>([]);
   const [pipeline, setPipeline] = useState<Record<string, number>>({});
-  interface ApiCompany { id: string; name: string; website_url?: string; linkedin_url?: string; notes?: string }
-  const [companies, setCompanies] = useState<ApiCompany[]>([]);
-  interface WatchCompany { id: string; company_name: string; tier: string; source?: string; notes?: string; matching_jobs?: number }
+  interface WatchCompany { id?: string; company_name: string; name?: string; tier?: string; source?: string; notes?: string; matching_jobs?: number }
   const [watchCompanies, setWatchCompanies] = useState<WatchCompany[]>([]);
-  interface ApiTemplate { id: string; name: string; subject: string; body_md: string }
-  const [templates, setTemplates] = useState<ApiTemplate[]>([]);
   const [hasApi, setHasApi] = useState(false);
+  const [panelHealth, setPanelHealth] = useState<{ status?: string; message?: string } | null>(null);
+  const [panelCards, setPanelCards] = useState<{ total?: number; saved?: number; applied?: number; interview?: number }>({});
 
-  const loadJobs = useCallback(async (status: string) => {
+  // ── Primary: load from /api/jobs/panel ──
+  const loadPanel = useCallback(async (status: string) => {
+    try {
+      const statusParam = status === "all" ? "" : status;
+      const data = await apiGet<Record<string, unknown>>(`/jobs/panel?limit=10&status=${statusParam}`);
+
+      // Map cards -> top stats
+      if (data.cards && typeof data.cards === "object") {
+        const c = data.cards as Record<string, unknown>;
+        setPanelCards({ total: Number(c.total ?? 0), saved: Number(c.saved ?? 0), applied: Number(c.applied ?? 0), interview: Number(c.interview ?? 0) });
+      }
+
+      // Map pipeline
+      if (data.pipeline && typeof data.pipeline === "object") {
+        setPipeline(data.pipeline as Record<string, number>);
+      }
+
+      // Map shortlist -> job feed
+      const shortlist = Array.isArray(data.shortlist) ? data.shortlist : [];
+      const jobs: ApiJob[] = shortlist.map((j: Record<string, unknown>) => ({
+        id: String(j.id || j.url || crypto.randomUUID()),
+        title: String(j.title || j.job_title || ""),
+        company: String(j.company || ""),
+        location: j.location ? String(j.location) : undefined,
+        url: String(j.url || j.link || ""),
+        status: String(j.status || "new"),
+        posted_at: j.posted_at ? String(j.posted_at) : undefined,
+        fetched_at: j.fetched_at ? String(j.fetched_at) : undefined,
+        tags_json: j.tags_json ? String(j.tags_json) : j.tags ? JSON.stringify(j.tags) : undefined,
+        match_score: j.match_score != null ? Number(j.match_score) : j.fit_score != null ? Number(j.fit_score) : undefined,
+        fit_score: j.fit_score != null ? Number(j.fit_score) : undefined,
+        why_match: j.why_match ? String(j.why_match) : undefined,
+        risks: j.risks ? String(j.risks) : undefined,
+        match_factors_json: j.match_factors_json ? String(j.match_factors_json) : undefined,
+      }));
+      setApiJobs(jobs);
+      setHasApi(true);
+
+      // Map companies_to_watch
+      if (Array.isArray(data.companies_to_watch)) {
+        setWatchCompanies(data.companies_to_watch.map((c: Record<string, unknown>) => ({
+          company_name: String(c.company_name || c.name || ""),
+          name: c.name ? String(c.name) : undefined,
+          tier: c.tier ? String(c.tier) : undefined,
+          matching_jobs: c.matching_jobs != null ? Number(c.matching_jobs) : undefined,
+        })));
+      }
+
+      // Map health
+      if (data.health && typeof data.health === "object") {
+        setPanelHealth(data.health as { status?: string; message?: string });
+      }
+
+      // Map outreach_templates
+      if (Array.isArray(data.outreach_templates) && data.outreach_templates.length > 0) {
+        setOutreachTemplates(data.outreach_templates.map((t: unknown) => String(t)));
+      } else {
+        setOutreachTemplates(["cold_email", "linkedin_connect", "follow_up", "thank_you"]);
+      }
+
+      setLastRefresh(new Date().toISOString());
+      setStaleData(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // ── Fallback: load from legacy /api/jobs/feed ──
+  const loadLegacyFeed = useCallback(async (status: string) => {
     try {
       const data = await apiGet<{ items: ApiJob[]; lastRefresh?: string }>(`/jobs/feed?status=${status}&limit=50`);
       if (data.items) { setApiJobs(data.items); setHasApi(true); }
       if (data.lastRefresh) setLastRefresh(data.lastRefresh);
     } catch { setHasApi(false); }
-  }, []);
-
-  const loadPipeline = useCallback(async () => {
     try {
       const data = await apiGet<{ pipeline: Record<string, number> }>("/jobs/pipeline");
       if (data.pipeline) setPipeline(data.pipeline);
     } catch { /* non-fatal */ }
   }, []);
 
-  const loadCompanies = useCallback(async () => {
-    try {
-      const data = await apiGet<{ companies: ApiCompany[] }>("/companies");
-      if (data.companies) setCompanies(data.companies);
-    } catch { /* non-fatal */ }
-  }, []);
+  // ── Combined load: panel first, fallback to legacy ──
+  const loadJobs = useCallback(async (status: string) => {
+    const panelOk = await loadPanel(status);
+    if (!panelOk) {
+      await loadLegacyFeed(status);
+    }
+  }, [loadPanel, loadLegacyFeed]);
 
-  const loadWatchCompanies = useCallback(async () => {
-    try {
-      const data = await apiGet<{ companies: WatchCompany[] }>("/companies/watch");
-      if (data.companies) setWatchCompanies(data.companies);
-    } catch { /* non-fatal */ }
-  }, []);
+  useEffect(() => { loadJobs(statusFilter); }, [statusFilter, loadJobs]);
 
-  const loadTemplates = useCallback(async () => {
-    try {
-      const data = await apiGet<{ templates: ApiTemplate[] }>("/templates");
-      if (data.templates) setTemplates(data.templates);
-    } catch { /* non-fatal */ }
-  }, []);
-
-  useEffect(() => { loadJobs(statusFilter); loadPipeline(); loadCompanies(); loadWatchCompanies(); loadTemplates(); }, [statusFilter, loadJobs, loadPipeline, loadCompanies, loadWatchCompanies, loadTemplates]);
+  // Auto-refresh every 5 min
+  useEffect(() => {
+    const interval = setInterval(() => { loadJobs(statusFilter); }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [statusFilter, loadJobs]);
 
   async function handleRefresh() {
     setRefreshing(true); setRefreshResult(null);
     try {
-      const data = await apiPost<{ ok: boolean; newJobs?: number; inserted?: number; scored?: number; failedSources?: number; fetched?: number; deduped?: number; error?: string }>("/jobs/refresh", {});
-      if (data.ok) {
-        const parts = [`${data.inserted || data.newJobs || 0} new`];
-        if (data.deduped) parts.push(`${data.deduped} deduped`);
-        if (data.scored) parts.push(`${data.scored} scored`);
-        if (data.failedSources) parts.push(`${data.failedSources} source errors`);
-        setRefreshResult(parts.join(", "));
-        // If refresh yielded 0 inserted items due to source failures, mark as stale
-        if ((data.inserted || 0) === 0 && (data.failedSources || 0) > 0) {
-          setStaleData(true);
-        } else {
-          setStaleData(false);
-        }
+      const ok = await loadPanel(statusFilter);
+      if (ok) {
+        setRefreshResult("Panel refreshed");
+        setStaleData(false);
       } else {
-        setRefreshResult(data.error || "Failed");
+        // Fallback to legacy refresh then re-load
+        try {
+          const data = await apiPost<{ ok: boolean; inserted?: number; newJobs?: number; failedSources?: number; error?: string }>("/jobs/refresh", {});
+          if (data.ok) {
+            setRefreshResult(`${data.inserted || data.newJobs || 0} new jobs`);
+            setStaleData(false);
+          } else {
+            setRefreshResult(data.error || "Failed");
+            setStaleData(true);
+          }
+        } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); setStaleData(true); }
+        await loadLegacyFeed(statusFilter);
       }
-      loadJobs(statusFilter); loadPipeline();
     } catch (e) { setRefreshResult(e instanceof Error ? e.message : "Failed"); setStaleData(true); }
     finally { setRefreshing(false); }
   }
 
-  async function handleStatusChange(jobId: string, newStatus: string) {
-    try { await apiPatch(`/jobs/${jobId}`, { status: newStatus }); loadJobs(statusFilter); loadPipeline(); }
-    catch { /* fallback */ toggleJobApplied(jobId); refresh(); }
+  async function handleAction(job: ApiJob, action: string) {
+    try {
+      await apiPost("/jobs/action", { url: job.url, action });
+      // Re-fetch panel immediately after action
+      await loadJobs(statusFilter);
+    } catch {
+      // Fallback to legacy D1 PATCH
+      try { await apiPatch(`/jobs/${job.id}`, { status: action }); loadJobs(statusFilter); }
+      catch { toggleJobApplied(job.id); refresh(); }
+    }
   }
 
   async function handleAddToWatch(companyName: string) {
     try {
       await apiPost("/companies/watch", { company_name: companyName, tier: "emerging", source: "manual" });
-      loadWatchCompanies();
+      loadJobs(statusFilter);
     } catch { /* non-fatal */ }
   }
 
-  async function handleDraftOutreach(jobId: string) {
-    if (templates.length === 0) return;
-    setDraftingJobId(jobId);
-    setDraftResult(null);
+  async function handleOutreach(jobTitle: string, jobCompany: string, templateType: string) {
+    setOutreachLoading(true);
+    setOutreachResult(null);
+    setOutreachError(null);
     try {
-      const data = await apiPost<{ ok: boolean; subject: string; body_md: string }>("/outreach/draft", { job_id: jobId, template_id: templates[0].id });
-      if (data.ok) setDraftResult({ subject: data.subject, body_md: data.body_md });
-    } catch { /* non-fatal */ }
+      const data = await apiPost<Record<string, unknown>>("/jobs/outreach", {
+        job_title: jobTitle,
+        company: jobCompany,
+        template_type: templateType,
+        your_name: "User",
+      });
+      if (data.error) {
+        setOutreachError(String(data.error));
+      } else {
+        setOutreachResult({
+          subject: data.subject ? String(data.subject) : undefined,
+          body_md: data.body_md ? String(data.body_md) : data.message ? String(data.message) : undefined,
+          message: data.message ? String(data.message) : undefined,
+        });
+      }
+    } catch (e) {
+      setOutreachError(e instanceof Error ? e.message : "Outreach generation failed");
+    } finally {
+      setOutreachLoading(false);
+    }
   }
 
   function handleAdd() {
@@ -1025,10 +1110,10 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
     tags_json: JSON.stringify(j.tags),
   }));
 
-  const pSaved = pipeline.saved || 0;
+  const pSaved = panelCards.saved || pipeline.saved || 0;
   const pNew = pipeline.new || 0;
-  const pApplied = pipeline.applied || 0;
-  const pInterview = pipeline.interview || 0;
+  const pApplied = panelCards.applied || pipeline.applied || 0;
+  const pInterview = panelCards.interview || pipeline.interview || 0;
   const pOffer = pipeline.offer || 0;
   const pRejected = pipeline.rejected || 0;
 
@@ -1048,10 +1133,11 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-3 gap-2">
-        <StatBox icon="💼" value={displayJobs.length} label="Total" />
+      <div className="grid grid-cols-4 gap-2">
+        <StatBox icon="💼" value={panelCards.total || displayJobs.length} label="Total" />
+        <StatBox icon="⭐" value={pSaved} label="Saved" />
         <StatBox icon="✅" value={pApplied} label="Applied" />
-        <StatBox icon="🆕" value={pNew + pSaved} label="New/Saved" />
+        <StatBox icon="🎤" value={pInterview} label="Interview" />
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -1060,6 +1146,11 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
           {refreshing ? "Refreshing…" : "🔄 Refresh Feed"}
         </button>
         <span className="text-[10px] text-zinc-500">Last: {lastRefreshLabel}</span>
+        {panelHealth && (
+          <Badge color={panelHealth.status === "ok" || panelHealth.status === "healthy" ? "emerald" : "amber"}>
+            {panelHealth.status || "unknown"}
+          </Badge>
+        )}
         {isStale && <Badge color="amber">⚠ Stale data</Badge>}
         {refreshResult && <span className="text-[10px] text-zinc-400">{refreshResult}</span>}
       </div>
@@ -1116,14 +1207,17 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
           {displayJobs.length === 0 && (
             <div className="text-center py-6 text-xs text-zinc-500">No jobs. Click Refresh Feed to scan.</div>
           )}
-          {displayJobs.map((j) => {
-            const jobTags: string[] = j.tags_json ? JSON.parse(j.tags_json) : [];
-            const ms = (j as ApiJob).match_score;
+          {displayJobs.map((j, idx) => {
+            let jobTags: string[] = [];
+            try { jobTags = j.tags_json ? JSON.parse(j.tags_json) : []; } catch { /* */ }
+            const ms = (j as ApiJob).match_score || (j as ApiJob).fit_score;
             const wm = (j as ApiJob).why_match;
+            const risks = (j as ApiJob).risks;
             const mfRaw = (j as ApiJob).match_factors_json;
-            const matchFactors: { category: string; label: string; delta: number }[] = mfRaw ? JSON.parse(mfRaw) : [];
+            let matchFactors: { category: string; label: string; delta: number }[] = [];
+            try { matchFactors = mfRaw ? JSON.parse(mfRaw) : []; } catch { /* */ }
             return (
-            <div key={j.id} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
+            <div key={j.id || `job-${idx}`} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-white/10 flex items-center justify-center text-sm font-bold text-white shrink-0">
                   {j.company.charAt(0)}
@@ -1138,6 +1232,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
                   </div>
                   <div className="text-[10px] text-zinc-400">{j.company} · {j.location || "Remote"}</div>
                   {wm && <div className="text-[10px] text-zinc-500 mt-0.5">{wm}</div>}
+                  {risks && <div className="text-[10px] text-rose-400/70 mt-0.5">⚠ {risks}</div>}
                   {matchFactors.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-0.5 opacity-0 group-hover:opacity-100 transition">
                       {matchFactors.map((f, i) => (
@@ -1156,22 +1251,20 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
                     <a href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(j.title + " " + j.company)}`}
                       target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">🔗 LinkedIn</a>
                     <button onClick={() => handleAddToWatch(j.company)} className="text-[9px] text-amber-400 hover:underline">⭐ Watch</button>
-                    {templates.length > 0 && (
-                      <button onClick={() => handleDraftOutreach(j.id)} className="text-[9px] text-violet-400 hover:underline">📨 Draft</button>
-                    )}
+                    <button onClick={() => { setOutreachJob({ title: j.title, company: j.company }); setOutreachResult(null); setOutreachError(null); }} className="text-[9px] text-violet-400 hover:underline">📨 Outreach</button>
                   </div>
                 </div>
                 <div className="flex flex-col gap-1 shrink-0">
                   {j.status !== "applied" && (
-                    <button onClick={() => hasApi ? handleStatusChange(j.id, "applied") : (() => { toggleJobApplied(j.id); refresh(); })()}
+                    <button onClick={() => handleAction(j as ApiJob, "applied")}
                       className="px-2 py-1 rounded-lg text-[10px] font-medium bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition">Apply</button>
                   )}
                   {j.status !== "saved" && j.status !== "applied" && (
-                    <button onClick={() => handleStatusChange(j.id, "saved")}
+                    <button onClick={() => handleAction(j as ApiJob, "saved")}
                       className="px-2 py-1 rounded-lg text-[10px] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition">Save</button>
                   )}
                   {j.status !== "dismissed" && (
-                    <button onClick={() => handleStatusChange(j.id, "dismissed")}
+                    <button onClick={() => handleAction(j as ApiJob, "dismissed")}
                       className="px-2 py-1 rounded-lg text-[10px] font-medium bg-white/5 text-zinc-500 hover:bg-white/10 transition">✕</button>
                   )}
                 </div>
@@ -1182,40 +1275,61 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
         </div>
       </Card>
 
-      {/* Outreach Draft Modal */}
-      {draftingJobId && draftResult && (
-        <Card title="Outreach Draft" icon="📨" actions={
-          <button onClick={() => { setDraftingJobId(null); setDraftResult(null); }} className="text-[10px] px-2 py-1 rounded-lg bg-white/5 text-zinc-400 hover:bg-white/10 transition">Close</button>
-        }>
-          <div className="space-y-2">
-            <div className="text-[10px] text-zinc-400">Subject:</div>
-            <div className="text-xs text-white bg-white/5 rounded-lg p-2">{draftResult.subject}</div>
-            <div className="text-[10px] text-zinc-400">Body:</div>
-            <div className="text-xs text-zinc-300 bg-white/5 rounded-lg p-2 whitespace-pre-wrap max-h-40 overflow-auto">{draftResult.body_md}</div>
-            <button onClick={() => { navigator.clipboard.writeText(`Subject: ${draftResult.subject}\n\n${draftResult.body_md}`); }}
-              className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 transition">📋 Copy to Clipboard</button>
+      {/* Outreach Modal */}
+      {outreachJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setOutreachJob(null)}>
+          <div className="w-full max-w-md mx-4 glass rounded-2xl p-5 max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-white">📨 Outreach — {outreachJob.company}</h3>
+              <button onClick={() => setOutreachJob(null)} className="text-zinc-400 hover:text-white text-sm">✕</button>
+            </div>
+            <div className="text-[10px] text-zinc-400 mb-2">Select a template type:</div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {outreachTemplates.map((t) => (
+                <button key={t} onClick={() => handleOutreach(outreachJob.title, outreachJob.company, t)}
+                  disabled={outreachLoading}
+                  className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 disabled:opacity-50 transition capitalize">
+                  {t.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+            {outreachLoading && <div className="text-[10px] text-zinc-500 py-4 text-center">Generating…</div>}
+            {outreachError && <div className="text-[10px] text-rose-400 bg-rose-500/10 rounded-lg p-2 mb-2">{outreachError}</div>}
+            {outreachResult && (
+              <div className="space-y-2">
+                {outreachResult.subject && (
+                  <>
+                    <div className="text-[10px] text-zinc-400">Subject:</div>
+                    <div className="text-xs text-white bg-white/5 rounded-lg p-2">{outreachResult.subject}</div>
+                  </>
+                )}
+                <div className="text-[10px] text-zinc-400">Message:</div>
+                <div className="text-xs text-zinc-300 bg-white/5 rounded-lg p-2 whitespace-pre-wrap max-h-40 overflow-auto">
+                  {outreachResult.body_md || outreachResult.message || ""}
+                </div>
+                <button onClick={() => {
+                  const text = outreachResult.subject
+                    ? `Subject: ${outreachResult.subject}\n\n${outreachResult.body_md || outreachResult.message || ""}`
+                    : outreachResult.body_md || outreachResult.message || "";
+                  navigator.clipboard.writeText(text);
+                }}
+                  className="px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium hover:bg-violet-500/30 transition">📋 Copy to Clipboard</button>
+              </div>
+            )}
           </div>
-        </Card>
+        </div>
       )}
 
       {/* Companies to Watch */}
       <Card title="Companies to Watch" icon="🏢">
         <div className="space-y-1.5 max-h-48 overflow-auto">
-          {watchCompanies.length === 0 && companies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
-          {watchCompanies.map((c) => (
-            <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2" onClick={() => setStatusFilter("all")}>
-              <Badge color={c.tier === "big" ? "cyan" : "amber"}>{c.tier}</Badge>
-              <span className="text-xs text-white flex-1">{c.company_name}</span>
+          {watchCompanies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
+          {watchCompanies.map((c, i) => (
+            <div key={c.company_name || i} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2" onClick={() => setStatusFilter("all")}>
+              {c.tier && <Badge color={c.tier === "big" ? "cyan" : "amber"}>{c.tier}</Badge>}
+              <span className="text-xs text-white flex-1">{c.company_name || c.name}</span>
               {(c.matching_jobs ?? 0) > 0 && <span className="text-[9px] text-emerald-400">{c.matching_jobs} jobs</span>}
-              <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.company_name)}`}
-                target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">LinkedIn</a>
-            </div>
-          ))}
-          {watchCompanies.length === 0 && companies.map((c) => (
-            <div key={c.id} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
-              <span className="text-xs text-white flex-1">{c.name}</span>
-              {c.website_url && <a href={c.website_url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-zinc-400 hover:text-white">🌐</a>}
-              <a href={c.linkedin_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.name)}`}
+              <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(c.company_name || c.name || "")}`}
                 target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-400 hover:underline">LinkedIn</a>
             </div>
           ))}
@@ -1225,10 +1339,8 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
       {/* Outreach Templates */}
       <Card title="Outreach Templates" icon="📨">
         <div className="space-y-1.5">
-          {templates.length > 0 ? templates.map((t) => (
-            <div key={t.id} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition">{t.name}</div>
-          )) : ["Cold Email — Hiring Manager", "LinkedIn Connection Request", "Follow-up After Application", "Thank You — Post Interview"].map((t) => (
-            <div key={t} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition">{t}</div>
+          {outreachTemplates.map((t) => (
+            <div key={t} className="w-full text-left rounded-lg bg-white/5 hover:bg-white/10 px-3 py-2 text-xs text-zinc-300 transition capitalize">{t.replace(/_/g, " ")}</div>
           ))}
         </div>
       </Card>

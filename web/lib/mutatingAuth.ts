@@ -80,7 +80,7 @@ export async function requireMutatingAuth(req: Request): Promise<{ session: Sess
   const session = await getSession();
   if (!session) throw new HttpError(401, "Missing or invalid session");
 
-  const csrf = req.headers.get("x-csrf");
+  const csrf = req.headers.get("x-csrf") || req.headers.get("x-csrf-token");
   if (!csrf || csrf !== session.csrfToken) throw new HttpError(403, "Invalid CSRF token");
 
   return {

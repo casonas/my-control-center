@@ -9,12 +9,14 @@ export async function GET(req: Request) {
   const limit = url.searchParams.get("limit") || "10";
   const offset = url.searchParams.get("offset") || "0";
   const status = url.searchParams.get("status") || "";
+  const locationMode = url.searchParams.get("location_mode") || "";
 
   const baseUrl = process.env.JOBS_API_URL || "https://jobs-api.my-control-center.com";
   const apiUrl = new URL(`${baseUrl}/jobs/panel`);
   apiUrl.searchParams.set("limit", limit);
   apiUrl.searchParams.set("offset", offset);
   if (status) apiUrl.searchParams.set("status", status);
+  if (locationMode) apiUrl.searchParams.set("location_mode", locationMode);
 
   try {
     const res = await fetch(apiUrl.toString(), {

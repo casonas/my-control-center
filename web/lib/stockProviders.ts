@@ -53,8 +53,31 @@ const STALE_THRESHOLD_SEC = 600;
    Env helper
    ================================================================ */
 
+/** Detect whether we're running in a cloud/edge environment (Cloudflare Workers, etc.) */
+function isCloudRuntime(): boolean {
+  try {
+    // Cloudflare Workers expose caches global; Node.js does not by default
+    if (typeof globalThis !== "undefined" && typeof (globalThis as Record<string, unknown>).caches !== "undefined") return true;
+    if (typeof process !== "undefined" && process.env) {
+      if (typeof process.env.CF_PAGES !== "undefined") return true;
+      if (typeof process.env.CF_PAGES_URL !== "undefined") return true;
+    }
+    return false;
+  } catch { return false; }
+}
+
 export function getStockIntelBase(): string {
-  return process.env.STOCK_INTEL_API_BASE || "http://127.0.0.1:18093";
+  const envBase = process.env.STOCK_INTEL_API_BASE;
+  if (envBase) {
+    // Block localhost/127.x in cloud runtimes — they can't reach it
+    if (isCloudRuntime() && /localhost|127\.\d+\.\d+\.\d+/i.test(envBase)) {
+      return "";
+    }
+    return envBase;
+  }
+  // No env set: only use localhost default in local dev
+  if (isCloudRuntime()) return "";
+  return "http://127.0.0.1:18093";
 }
 
 /* ================================================================
@@ -153,10 +176,14 @@ export function scoreSentiment(title: string, summary?: string | null): number {
 export class StockIntelProvider {
   readonly name = "stock-intel";
   private base: string;
-  constructor(base?: string) { this.base = base || getStockIntelBase(); }
+  constructor(base?: string) { this.base = base ?? getStockIntelBase(); }
+
+  /** True when Stock Intel API base is configured and reachable */
+  get available(): boolean { return this.base.length > 0; }
 
   /* ── health ──────────────────────────────────────── */
   async checkHealth(): Promise<SourceHealth> {
+    if (!this.available) return { name: this.name, status: "error", latencyMs: 0, error: "Stock Intel API base not configured" };
     const t = Date.now();
     try {
       await fetchWithRetry(`${this.base}/health`);
@@ -166,6 +193,7 @@ export class StockIntelProvider {
 
   /* ── universe sync (POST /universe/sync) ─────────── */
   async syncUniverse(tickers: string[]): Promise<SourceHealth> {
+    if (!this.available) return { name: `${this.name}/universe`, status: "error", latencyMs: 0, error: "Stock Intel not configured" };
     const t = Date.now();
     try {
       await fetchWithRetry(`${this.base}/universe/sync`, {
@@ -179,6 +207,7 @@ export class StockIntelProvider {
 
   /* ── trigger upstream ingest (POST /update) ──────── */
   async triggerUpdate(): Promise<SourceHealth> {
+    if (!this.available) return { name: `${this.name}/update`, status: "error", latencyMs: 0, error: "Stock Intel not configured" };
     const t = Date.now();
     try {
       await fetchWithRetry(`${this.base}/update`, { method: "POST" });
@@ -224,7 +253,8 @@ export class StockIntelProvider {
       }
     } catch { /* Yahoo failed — fall through to Stock Intel */ }
 
-    // 2) Fallback to Stock Intel
+    // 2) Fallback to Stock Intel (only if configured)
+    if (this.available) {
     try {
       const res = await fetchWithRetry(`${this.base}/alerts/watchlist`);
       const body = await res.json() as unknown;
@@ -252,6 +282,7 @@ export class StockIntelProvider {
         } catch { /* movers is non-critical */ }
       }
     } catch { /* Stock Intel also failed */ }
+    } // end if (this.available)
 
     const status = quotes.length > 0 ? "ok" : "error";
     return { quotes, health: { name: quotes.some((q) => q.source === "yahoo") ? "yahoo+stock-intel" : this.name, status, latencyMs: Date.now() - t } };
@@ -290,7 +321,8 @@ export class StockIntelProvider {
       }
     } catch { /* Yahoo failed — fall through */ }
 
-    // 2) Fallback to Stock Intel summaries
+    // 2) Fallback to Stock Intel summaries (only if configured)
+    if (this.available) {
     try {
       const res = await fetchWithRetry(`${this.base}/summaries/daily`);
       const body = await res.json() as unknown;
@@ -306,6 +338,7 @@ export class StockIntelProvider {
         if (btc !== null) indices.push({ symbol: "BTC", value: num(s, "btc_value") ?? 0, change_pct: btc, source: "stock-intel" });
       }
     } catch { /* Stock Intel also failed */ }
+    } // end if (this.available)
 
     const status = indices.length > 0 ? "ok" : "error";
     return { indices, health: { name: indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : `${this.name}/summaries`, status, latencyMs: Date.now() - t } };
@@ -313,6 +346,7 @@ export class StockIntelProvider {
 
   /* ── movers (GET /market/movers-by-news) ─────────── */
   async getMovers(): Promise<{ movers: Record<string, unknown>[]; health: SourceHealth }> {
+    if (!this.available) return { movers: [], health: { name: `${this.name}/movers`, status: "error", latencyMs: 0, error: "Stock Intel not configured" } };
     const t = Date.now();
     try {
       const res = await fetchWithRetry(`${this.base}/market/movers-by-news`);
@@ -323,6 +357,7 @@ export class StockIntelProvider {
 
   /* ── ticker news (GET /ticker/{sym}/news) ────────── */
   async getTickerNews(symbol: string): Promise<{ items: Record<string, unknown>[]; health: SourceHealth }> {
+    if (!this.available) return { items: [], health: { name: `${this.name}/ticker-news`, status: "error", latencyMs: 0, error: "Stock Intel not configured" } };
     const t = Date.now();
     try {
       const res = await fetchWithRetry(`${this.base}/ticker/${encodeURIComponent(symbol)}/news`);
@@ -333,6 +368,7 @@ export class StockIntelProvider {
 
   /* ── ticker why (GET /ticker/{sym}/why) ──────────── */
   async getTickerWhy(symbol: string): Promise<{ analysis: Record<string, unknown> | null; health: SourceHealth }> {
+    if (!this.available) return { analysis: null, health: { name: `${this.name}/ticker-why`, status: "error", latencyMs: 0, error: "Stock Intel not configured" } };
     const t = Date.now();
     try {
       const res = await fetchWithRetry(`${this.base}/ticker/${encodeURIComponent(symbol)}/why`);
@@ -343,6 +379,7 @@ export class StockIntelProvider {
 
   /* ── daily summary (GET /summaries/daily) ────────── */
   async getDailySummary(): Promise<{ summary: Record<string, unknown> | null; health: SourceHealth }> {
+    if (!this.available) return { summary: null, health: { name: `${this.name}/summaries`, status: "error", latencyMs: 0, error: "Stock Intel not configured" } };
     const t = Date.now();
     try {
       const res = await fetchWithRetry(`${this.base}/summaries/daily`);
