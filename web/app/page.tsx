@@ -1013,7 +1013,7 @@ export default function Home() {
           {messages.map((m, idx) => (
             <div key={idx} className={cx("max-w-[88%] animate-fade-in", m.role === "user" && "ml-auto")}>
               <div className={cx(
-                "rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words overflow-hidden",
+                "rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words",
                 m.role === "user"
                   ? `bg-gradient-to-r ${tabMeta.gradient} text-white`
                   : "bg-white/5 text-zinc-200 border border-white/5"
