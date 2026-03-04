@@ -16,7 +16,7 @@ export async function GET(req: Request) {
       const hashRow = await db
         .prepare(
           `SELECT board_hash FROM sports_props_board
-           WHERE user_id = ? AND league = ? AND status = 'active'
+           WHERE user_id = ? AND league = ?
            ORDER BY fetched_at DESC LIMIT 1`
         )
         .bind(userId, league)
@@ -63,18 +63,36 @@ export async function GET(req: Request) {
       }
 
       if (Object.keys(byType).length === 0) {
+        const lastAction = await db
+           .prepare(
+             `SELECT action FROM sports_generation_log
+              WHERE user_id = ? AND league = ? AND board_hash = ?
+              ORDER BY created_at DESC LIMIT 1`
+           )
+           .bind(userId, league, boardHash)
+           .first<{ action: string }>();
+        
         return Response.json({
           cards: null,
           board_hash: boardHash,
           reason: "no_picks_generated",
+          cached: lastAction?.action === "cache_hit",
         });
       }
-
+        const lastAction = await db
+          .prepare(
+            `SELECT action FROM sports_generation_log
+            WHERE user_id = ? AND league = ? AND board_hash = ?
+            ORDER BY created_at DESC LIMIT 1`
+         )
+         .bind(userId, league, boardHash)
+         .first<{ action: string }>();
       return Response.json({
         cards: byType,
         board_hash: boardHash,
         created_at: createdAt,
         model,
+        cached: lastAction?.action === "cache_hit",
       });
     } catch {
       return Response.json({ cards: null, reason: "error" });
