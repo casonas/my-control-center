@@ -11,6 +11,15 @@ export async function GET(req: Request) {
     const filter = url.searchParams.get("filter") || "all";
     const courseId = url.searchParams.get("courseId");
     try {
+      // Auto-mark late: update assignments past due that are still open/in_progress
+      const now = new Date().toISOString();
+      try {
+        await db.prepare(
+          `UPDATE school_assignments SET status = 'late', updated_at = ?
+           WHERE user_id = ? AND due_at < ? AND status IN ('open','in_progress')`
+        ).bind(now, userId, now).run();
+      } catch { /* non-critical */ }
+
       let query = `SELECT a.*, c.code AS course_code, c.name AS course_name, c.color AS course_color
         FROM school_assignments a LEFT JOIN courses c ON a.course_id = c.id
         WHERE a.user_id = ?`;
@@ -41,15 +50,15 @@ export async function POST(req: Request) {
     const db = getD1();
     if (!db) return Response.json({ error: "D1 not available" }, { status: 500 });
     try {
-      const body = await req.json() as { courseId?: string; title: string; description?: string; dueAt: string; priority?: string };
+      const body = await req.json() as { courseId?: string; title: string; description?: string; dueAt: string; priority?: string; notesMd?: string; estimatedMinutes?: number };
       if (!body.title || !body.dueAt) return Response.json({ error: "title and dueAt required" }, { status: 400 });
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       const priority = ["low", "medium", "high"].includes(body.priority || "") ? body.priority! : null;
       await db.prepare(
-        `INSERT INTO school_assignments (id, user_id, course_id, title, description, due_at, status, priority, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`
-      ).bind(id, session.user_id, body.courseId || null, body.title, body.description || null, body.dueAt, priority, now, now).run();
+        `INSERT INTO school_assignments (id, user_id, course_id, title, description, due_at, status, priority, notes_md, estimated_minutes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+      ).bind(id, session.user_id, body.courseId || null, body.title, body.description || null, body.dueAt, priority, body.notesMd || null, body.estimatedMinutes || null, now, now).run();
       return Response.json({ ok: true, id }, { status: 201 });
     } catch (err) { return d1ErrorResponse("POST /api/school/assignments", err); }
   });
