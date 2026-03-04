@@ -20,6 +20,7 @@ export const CRON_SCHEDULES: Record<string, { cron: string; description: string 
   lesson_plan_refresh:    { cron: "0 6 * * *",            description: "Daily lesson plan refresh at 6am" },
   industry_radar_refresh: { cron: "0 */3 * * *",          description: "Industry radar refresh every 3 hours" },
   memory_summarize:       { cron: "0 6 * * *",            description: "Nightly session summarization at 6am" },
+  academic_reminders:     { cron: "0 7 * * *",            description: "Daily academic due-date reminders at 7am" },
 };
 
 // ─── Update cron_runs helper ─────────────────────────
@@ -521,6 +522,84 @@ export async function runMemorySummarize(db: D1Database, userId: string) {
   }
 }
 
+// ─── Academic Reminders ───────────────────────────────
+export async function runAcademicReminders(db: D1Database, userId: string) {
+  const jobKey = "academic_reminders";
+  const start = Date.now();
+  try {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const day1 = new Date(now.getTime() + 1 * 86400000).toISOString();
+    const day3 = new Date(now.getTime() + 3 * 86400000).toISOString();
+    const day7 = new Date(now.getTime() + 7 * 86400000).toISOString();
+
+    // Auto-mark late
+    await db.prepare(
+      `UPDATE school_assignments SET status = 'late', updated_at = ?
+       WHERE user_id = ? AND due_at < ? AND status IN ('open','in_progress')`
+    ).bind(nowIso, userId, nowIso).run();
+
+    // Find assignments due within 7 days that are not done/dropped
+    const r = await db.prepare(
+      `SELECT id, title, due_at, status FROM school_assignments
+       WHERE user_id = ? AND due_at <= ? AND status NOT IN ('done','dropped')
+       ORDER BY due_at ASC`
+    ).bind(userId, day7).all<{ id: string; title: string; due_at: string; status: string }>();
+
+    const assignments = r.results || [];
+    let created = 0;
+    const today = nowIso.slice(0, 10);
+
+    for (const a of assignments) {
+      const dueDt = new Date(a.due_at);
+      let label = "";
+      if (dueDt < now) label = "overdue";
+      else if (a.due_at <= day1) label = "due_today";
+      else if (a.due_at <= day3) label = "due_3d";
+      else label = "due_7d";
+
+      // Dedupe key: assignment_id + date + label
+      const dedupeKey = `acad_${a.id}_${today}_${label}`;
+
+      // Check if notification already exists (dedupe)
+      const existing = await db.prepare(
+        `SELECT id FROM notifications WHERE user_id = ? AND type = ?`
+      ).bind(userId, dedupeKey).first<{ id: string }>();
+      if (existing) continue;
+
+      const title = label === "overdue"
+        ? `⚠️ Overdue: ${a.title}`
+        : label === "due_today"
+          ? `🔴 Due today: ${a.title}`
+          : label === "due_3d"
+            ? `🟡 Due in 3 days: ${a.title}`
+            : `📅 Due this week: ${a.title}`;
+
+      try {
+        await db.prepare(
+          `INSERT INTO notifications (id, user_id, category, type, title, message, severity, created_at)
+           VALUES (?, ?, 'school', ?, ?, ?, ?, ?)`
+        ).bind(
+          crypto.randomUUID(), userId, dedupeKey, title,
+          `Assignment "${a.title}" is ${label.replace("_", " ")} (due ${a.due_at.slice(0, 10)})`,
+          label === "overdue" || label === "due_today" ? "warning" : "info",
+          nowIso
+        ).run();
+        created++;
+      } catch { /* skip duplicate or missing table */ }
+    }
+
+    const tookMs = Date.now() - start;
+    await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: created, tookMs });
+    return { ok: true, created, checked: assignments.length, tookMs };
+  } catch (err) {
+    const tookMs = Date.now() - start;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await updateCronRun(db, jobKey, { status: "error", itemsProcessed: 0, tookMs, error: errMsg }).catch(() => {});
+    return { ok: false, error: errMsg, tookMs };
+  }
+}
+
 // ─── Dispatcher — run a named job for a user ─────────
 export type CronJobName =
   | "research_scan"
@@ -532,7 +611,8 @@ export type CronJobName =
   | "skills_radar_scan"
   | "lesson_plan_refresh"
   | "industry_radar_refresh"
-  | "memory_summarize";
+  | "memory_summarize"
+  | "academic_reminders";
 
 export async function runCronJob(db: D1Database, userId: string, jobName: CronJobName) {
   switch (jobName) {
@@ -556,6 +636,8 @@ export async function runCronJob(db: D1Database, userId: string, jobName: CronJo
       return runIndustryRadarRefresh(db, userId);
     case "memory_summarize":
       return runMemorySummarize(db, userId);
+    case "academic_reminders":
+      return runAcademicReminders(db, userId);
     default:
       return { ok: false, error: `Unknown job: ${jobName}` };
   }

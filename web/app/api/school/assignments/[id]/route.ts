@@ -10,7 +10,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
     if (!db) return Response.json({ error: "D1 not available" }, { status: 500 });
     try {
       const { id } = await ctx.params;
-      const body = await req.json() as { title?: string; description?: string; dueAt?: string; status?: string; priority?: string; courseId?: string };
+      const body = await req.json() as { title?: string; description?: string; dueAt?: string; status?: string; priority?: string; courseId?: string; notesMd?: string; estimatedMinutes?: number };
       const sets: string[] = [];
       const vals: unknown[] = [];
 
@@ -24,6 +24,8 @@ export async function PATCH(req: Request, ctx: Ctx) {
         sets.push("priority = ?"); vals.push(p);
       }
       if (body.courseId !== undefined) { sets.push("course_id = ?"); vals.push(body.courseId || null); }
+      if (body.notesMd !== undefined) { sets.push("notes_md = ?"); vals.push(body.notesMd || null); }
+      if (body.estimatedMinutes !== undefined) { sets.push("estimated_minutes = ?"); vals.push(body.estimatedMinutes || null); }
 
       if (sets.length === 0) return Response.json({ error: "No fields" }, { status: 400 });
       sets.push("updated_at = ?"); vals.push(new Date().toISOString());
