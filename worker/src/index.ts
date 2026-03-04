@@ -216,6 +216,7 @@ function detectRemote(title: string, location: string | null): string {
 }
 
 // Deterministic dedupe key: hash(canonical_url + normalized_title + normalized_company)
+// Uses djb2 hash: ((hash << 5) + hash + char) with unsigned 32-bit wrap
 function workerBuildDedupeKey(rawUrl: string, title: string, company: string): string {
   const canonical = rawUrl.replace(/[?#].*$/, "").toLowerCase();
   const normTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();

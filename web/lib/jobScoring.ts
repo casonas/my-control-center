@@ -77,7 +77,7 @@ const IRRELEVANT_PATTERNS: RegExp[] = [
 export function scoreJob(title: string, company: string, location?: string | null, remoteFlag?: string | null): ScoredJob {
   const text = `${title} ${company} ${location || ""}`.toLowerCase();
   let score = 0;
-  const reasons: string[] = [];
+  const reasonSet = new Set<string>();
   const tags: string[] = [];
   const factors: { category: string; label: string; delta: number }[] = [];
 
@@ -98,7 +98,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
   for (const kw of ROLE_KEYWORDS) {
     if (kw.pattern.test(text)) {
       score += kw.weight;
-      reasons.push(kw.label);
+      reasonSet.add(kw.label);
       tags.push(kw.label);
       factors.push({ category: "role", label: kw.label, delta: kw.weight });
     }
@@ -108,7 +108,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
   for (const kw of SKILL_KEYWORDS) {
     if (kw.pattern.test(text)) {
       score += kw.weight;
-      if (reasons.length < 4) reasons.push(kw.label);
+      if (reasonSet.size < 4) reasonSet.add(kw.label);
       tags.push(kw.label);
       factors.push({ category: "skill", label: kw.label, delta: kw.weight });
     }
@@ -118,7 +118,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
   for (const exp of EXPERIENCE_BOOST) {
     if (exp.pattern.test(text)) {
       score += exp.delta;
-      if (reasons.length < 4) reasons.push("entry-level fit");
+      if (reasonSet.size < 4) reasonSet.add("entry-level fit");
       factors.push({ category: "experience", label: "entry-level boost", delta: exp.delta });
       break;
     }
@@ -141,6 +141,7 @@ export function scoreJob(title: string, company: string, location?: string | nul
   // Clamp to 0-100
   const finalScore = Math.max(0, Math.min(100, score));
 
+  const reasons = [...reasonSet];
   const whyMatch = reasons.length > 0
     ? `Matches: ${reasons.slice(0, 4).join(", ")}`
     : "No strong keyword matches found";

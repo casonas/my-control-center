@@ -113,7 +113,7 @@ export async function POST(req: Request) {
         }
       }
 
-      // Score any existing unscored jobs (backfill)
+      // Score any existing unscored jobs (backfill, throttled to 100 per refresh)
       try {
         const unscored = await db
           .prepare(`SELECT id, title, company, location, remote_flag FROM job_items WHERE user_id = ? AND (match_score IS NULL OR match_score = 0) LIMIT 100`)
