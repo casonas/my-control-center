@@ -1,7 +1,7 @@
 export const runtime = "edge";
 // web/app/api/jobs/refresh/route.ts — Ingest job feeds from RSS sources + score
 
-import { withMutatingAuth } from "@/lib/mutatingAuth";
+import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 import { parseFeed } from "@/lib/rss";
 import { scoreJob, detectRemoteFlag } from "@/lib/jobScoring";
@@ -10,7 +10,7 @@ import { DEFAULT_JOB_SOURCES, buildDedupeKey, fetchWithRetry } from "@/lib/jobSo
 const REFRESH_COOLDOWN_MS = 2 * 60 * 1000;
 
 export async function POST(req: Request) {
-  return withMutatingAuth(req, async ({ session }) => {
+  return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
 
@@ -92,7 +92,7 @@ export async function POST(req: Request) {
 
             // INSERT OR IGNORE: preserves existing rows — never overwrites saved/applied/etc status
             try {
-              await db
+              const insertResult = await db
                 .prepare(
                   `INSERT OR IGNORE INTO job_items
                    (id, user_id, source_id, title, company, location, url, posted_at, fetched_at, status, dedupe_key, match_score, why_match, match_factors_json, tags_json, remote_flag)
@@ -101,8 +101,13 @@ export async function POST(req: Request) {
                 .bind(id, userId, source.id, title, company, location, item.url, item.publishedAt, now, dedupeKey,
                   scoring.match_score, scoring.why_match, scoring.match_factors_json, scoring.tags_json, remoteFlag)
                 .run();
-              inserted++;
-              scored++;
+              const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+              if (changes > 0) {
+                inserted++;
+                scored++;
+              } else {
+                deduped++;
+              }
             } catch {
               deduped++;
             }
@@ -159,4 +164,3 @@ export async function POST(req: Request) {
     }
   });
 }
-

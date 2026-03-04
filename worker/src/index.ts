@@ -361,11 +361,12 @@ async function runJobsRefresh(db: D1Database, userId: string): Promise<{ items: 
         const scoring = scoreJobInline(title, company, null);
         // INSERT OR IGNORE: preserves existing rows — never overwrites user workflow state
         try {
-          await db.prepare(
+          const insertResult = await db.prepare(
             `INSERT OR IGNORE INTO job_items (id, user_id, source_id, title, company, url, posted_at, fetched_at, status, dedupe_key, match_score, why_match, match_factors_json, tags_json, remote_flag)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)`
           ).bind(crypto.randomUUID(), userId, String(src.id), title, company, item.url, item.publishedAt, now, dedupeKey, scoring.score, scoring.why, scoring.factors, scoring.tags, rf).run();
-          newJobs++;
+          const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+          if (changes > 0) newJobs++;
         } catch { /* dedupe — existing row preserved */ }
       }
     } catch { sourcesFailed++; }
@@ -998,4 +999,5 @@ interface D1PreparedStatement {
 interface D1Result {
   results: Record<string, unknown>[];
   success: boolean;
+  meta?: Record<string, unknown>;
 }

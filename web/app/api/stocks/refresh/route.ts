@@ -1,5 +1,5 @@
 export const runtime = "edge";
-import { withMutatingAuth } from "@/lib/mutatingAuth";
+import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
 import {
   getStockIntelProvider, storeQuotes, storeIndices, storeRegimeSnapshot,
@@ -13,7 +13,7 @@ const RISK_OFF_THRESHOLD = -1;
 const RISK_ON_THRESHOLD = 1;
 
 export async function POST(req: Request) {
-  return withMutatingAuth(req, async ({ session }) => {
+  return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
     if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
     const userId = session.user_id;

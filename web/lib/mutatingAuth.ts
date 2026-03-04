@@ -4,6 +4,7 @@
 // Node.js VPS (npm start).  No D1 or getRequestContext() required.
 //
 import { getSession } from "@/lib/auth";
+import { getInternalUserId, isInternalRequest } from "@/lib/internalAuth";
 
 export type SessionRow = {
   id: string;
@@ -75,6 +76,18 @@ function requireOriginAllowed(req: Request) {
  * Uses stateless signed cookies — no database required.
  */
 export async function requireMutatingAuth(req: Request): Promise<{ session: SessionRow }> {
+  if (isInternalRequest(req)) {
+    const userId = getInternalUserId(req);
+    return {
+      session: {
+        id: "internal",
+        user_id: userId,
+        csrf_token: "internal",
+        expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
+      },
+    };
+  }
+
   requireOriginAllowed(req);
 
   const session = await getSession();
@@ -109,3 +122,5 @@ export async function withMutatingAuth(
     return jsonError(500, "Internal error");
   }
 }
+
+export const withMutatingOrInternalAuth = withMutatingAuth;
