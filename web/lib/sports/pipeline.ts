@@ -48,12 +48,43 @@ async function upsertGames(db: D1Database, userId: string, games: NormalizedGame
 }
 
 /**
+ * Record odds history for line movement tracking.
+ */
+async function recordOddsHistory(
+  db: D1Database,
+  userId: string,
+  o: NormalizedOdds
+): Promise<void> {
+  const historyId = `${userId}_${o.game_id}_${o.book}_spread_${Date.now()}`;
+  try {
+    await db.prepare(
+      `INSERT INTO sports_odds_history (id, user_id, game_id, book, market, line, price, recorded_at)
+       VALUES (?, ?, ?, ?, 'spread', ?, ?, ?)`
+    ).bind(historyId, userId, o.game_id, o.book, o.spread_home, null, new Date().toISOString()).run();
+
+    // Keep only last 10 records per game+book+market
+    await db.prepare(
+      `DELETE FROM sports_odds_history
+       WHERE user_id = ? AND game_id = ? AND book = ? AND market = 'spread'
+         AND id NOT IN (
+           SELECT id FROM sports_odds_history
+           WHERE user_id = ? AND game_id = ? AND book = ? AND market = 'spread'
+           ORDER BY recorded_at DESC LIMIT 10
+         )`
+    ).bind(userId, o.game_id, o.book, userId, o.game_id, o.book).run();
+  } catch { /* non-fatal */ }
+}
+
+/**
  * Upsert odds into D1.
  */
 async function upsertOdds(db: D1Database, userId: string, odds: NormalizedOdds[]): Promise<number> {
   let count = 0;
   for (const o of odds) {
     try {
+      // Record history before upserting
+      await recordOddsHistory(db, userId, o);
+
       const id = `${o.game_id}_${o.book}_${o.asof}`;
       await db.prepare(
         `INSERT OR REPLACE INTO sports_odds_market (id, user_id, game_id, book, spread_home, spread_away, total, moneyline_home, moneyline_away, asof)

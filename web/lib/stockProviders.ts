@@ -186,16 +186,49 @@ export class StockIntelProvider {
     } catch (err) { return failHealth(`${this.name}/update`, t, err); }
   }
 
-  /* ── quotes: alerts/watchlist + movers-by-news ───── */
+  /* ── quotes: Yahoo Finance first, Stock Intel fallback ───── */
   async fetchQuotes(tickers: string[]): Promise<{ quotes: QuoteData[]; health: SourceHealth }> {
     const t = Date.now();
+    const tickerSet = new Set(tickers.map((s) => s.toUpperCase()));
+    const quotes: QuoteData[] = [];
+    const seen = new Set<string>();
+
+    // 1) Try Yahoo Finance first
+    try {
+      const symbols = tickers.join(",");
+      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+      const res = await fetchWithRetry(yahooUrl);
+      const body = await res.json() as Record<string, unknown>;
+      const qr = body.quoteResponse as Record<string, unknown> | undefined;
+      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+
+      for (const r of results) {
+        const sym = String(r.symbol || "").toUpperCase();
+        if (!sym || seen.has(sym)) continue;
+        const price = Number(r.regularMarketPrice ?? 0);
+        if (price <= 0) continue;
+        seen.add(sym);
+        quotes.push({
+          ticker: sym,
+          price,
+          change_pct: Number(r.regularMarketChangePercent ?? 0),
+          volume: r.regularMarketVolume != null ? Number(r.regularMarketVolume) : null,
+          premarket_price: r.preMarketPrice != null ? Number(r.preMarketPrice) : null,
+          premarket_change_pct: r.preMarketChangePercent != null ? Number(r.preMarketChangePercent) : null,
+          source: "yahoo",
+        });
+      }
+
+      if (quotes.length > 0 && tickers.every((tk) => seen.has(tk.toUpperCase()))) {
+        return { quotes, health: { name: "yahoo", status: "ok", latencyMs: Date.now() - t } };
+      }
+    } catch { /* Yahoo failed — fall through to Stock Intel */ }
+
+    // 2) Fallback to Stock Intel
     try {
       const res = await fetchWithRetry(`${this.base}/alerts/watchlist`);
       const body = await res.json() as unknown;
       const raw = toArray(body, "alerts");
-      const tickerSet = new Set(tickers.map((s) => s.toUpperCase()));
-      const quotes: QuoteData[] = [];
-      const seen = new Set<string>();
 
       for (const r of raw) {
         const sym = upper(r, "symbol", "ticker");
@@ -218,23 +251,51 @@ export class StockIntelProvider {
           }
         } catch { /* movers is non-critical */ }
       }
+    } catch { /* Stock Intel also failed */ }
 
-      return { quotes, health: { name: this.name, status: "ok", latencyMs: Date.now() - t } };
-    } catch (err) {
-      return { quotes: [], health: failHealth(this.name, t, err) };
-    }
+    const status = quotes.length > 0 ? "ok" : "error";
+    return { quotes, health: { name: quotes.some((q) => q.source === "yahoo") ? "yahoo+stock-intel" : this.name, status, latencyMs: Date.now() - t } };
   }
 
-  /* ── indices: summaries/daily ────────────────────── */
+  /* ── indices: Yahoo Finance first, Stock Intel fallback ────── */
   async fetchIndices(): Promise<{ indices: IndexData[]; health: SourceHealth }> {
     const t = Date.now();
+    const indices: IndexData[] = [];
+
+    // 1) Try Yahoo Finance for ^GSPC, ^IXIC, BTC-USD
+    try {
+      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent("^GSPC,^IXIC,BTC-USD")}`;
+      const res = await fetchWithRetry(yahooUrl);
+      const body = await res.json() as Record<string, unknown>;
+      const qr = body.quoteResponse as Record<string, unknown> | undefined;
+      const results = Array.isArray(qr?.result) ? qr.result as Record<string, unknown>[] : [];
+
+      const symbolMap: Record<string, string> = { "^GSPC": "SPX", "^IXIC": "IXIC", "BTC-USD": "BTC" };
+      for (const r of results) {
+        const rawSym = String(r.symbol || "");
+        const mapped = symbolMap[rawSym];
+        if (!mapped) continue;
+        const price = Number(r.regularMarketPrice ?? 0);
+        if (price <= 0) continue;
+        indices.push({
+          symbol: mapped,
+          value: price,
+          change_pct: Number(r.regularMarketChangePercent ?? 0),
+          source: "yahoo",
+        });
+      }
+
+      if (indices.length > 0) {
+        return { indices, health: { name: "yahoo/indices", status: "ok", latencyMs: Date.now() - t } };
+      }
+    } catch { /* Yahoo failed — fall through */ }
+
+    // 2) Fallback to Stock Intel summaries
     try {
       const res = await fetchWithRetry(`${this.base}/summaries/daily`);
       const body = await res.json() as unknown;
       const rows = toArray(body, "summaries");
-      const indices: IndexData[] = [];
 
-      // The summary may be a single object or array — normalise
       const s = rows[0] ?? (typeof body === "object" && body !== null ? body as Record<string, unknown> : null);
       if (s) {
         const spx = num(s, "sp500_change", "spx_change");
@@ -244,11 +305,10 @@ export class StockIntelProvider {
         if (ndx !== null) indices.push({ symbol: "IXIC", value: num(s, "nasdaq_value", "ndx_value") ?? 0, change_pct: ndx, source: "stock-intel" });
         if (btc !== null) indices.push({ symbol: "BTC", value: num(s, "btc_value") ?? 0, change_pct: btc, source: "stock-intel" });
       }
+    } catch { /* Stock Intel also failed */ }
 
-      return { indices, health: { name: `${this.name}/summaries`, status: "ok", latencyMs: Date.now() - t } };
-    } catch (err) {
-      return { indices: [], health: failHealth(`${this.name}/summaries`, t, err) };
-    }
+    const status = indices.length > 0 ? "ok" : "error";
+    return { indices, health: { name: indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : `${this.name}/summaries`, status, latencyMs: Date.now() - t } };
   }
 
   /* ── movers (GET /market/movers-by-news) ─────────── */
