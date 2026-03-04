@@ -1207,7 +1207,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
           {displayJobs.length === 0 && (
             <div className="text-center py-6 text-xs text-zinc-500">No jobs. Click Refresh Feed to scan.</div>
           )}
-          {displayJobs.map((j) => {
+          {displayJobs.map((j, idx) => {
             let jobTags: string[] = [];
             try { jobTags = j.tags_json ? JSON.parse(j.tags_json) : []; } catch { /* */ }
             const ms = (j as ApiJob).match_score || (j as ApiJob).fit_score;
@@ -1217,7 +1217,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
             let matchFactors: { category: string; label: string; delta: number }[] = [];
             try { matchFactors = mfRaw ? JSON.parse(mfRaw) : []; } catch { /* */ }
             return (
-            <div key={j.id || j.url} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
+            <div key={j.id || `job-${idx}`} className="rounded-xl bg-white/5 p-3 hover:bg-white/10 transition group">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-white/10 flex items-center justify-center text-sm font-bold text-white shrink-0">
                   {j.company.charAt(0)}

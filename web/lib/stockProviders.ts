@@ -57,10 +57,12 @@ const STALE_THRESHOLD_SEC = 600;
 function isCloudRuntime(): boolean {
   try {
     // Cloudflare Workers expose caches global; Node.js does not by default
-    return typeof globalThis !== "undefined" &&
-      (typeof (globalThis as Record<string, unknown>).caches !== "undefined" ||
-       typeof process.env.CF_PAGES !== "undefined" ||
-       typeof process.env.CF_PAGES_URL !== "undefined");
+    if (typeof globalThis !== "undefined" && typeof (globalThis as Record<string, unknown>).caches !== "undefined") return true;
+    if (typeof process !== "undefined" && process.env) {
+      if (typeof process.env.CF_PAGES !== "undefined") return true;
+      if (typeof process.env.CF_PAGES_URL !== "undefined") return true;
+    }
+    return false;
   } catch { return false; }
 }
 
