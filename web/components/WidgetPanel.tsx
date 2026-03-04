@@ -2416,6 +2416,9 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [deepDiveTopic, setDeepDiveTopic] = useState("");
 
+  // Research Intelligence: user skill names for gap detection
+  const [userSkillNames, setUserSkillNames] = useState<string[]>([]);
+
   const loadFeed = useCallback(async (f: string) => {
     try {
       const data = await apiGet<{ items: ApiItem[] }>(`/research/feed?filter=${f}&limit=50`);
@@ -2436,6 +2439,11 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
       ]);
       setEntities(entData.entities || []);
       setTrends(trendData.trends || []);
+    } catch { /* non-fatal */ }
+    // Load user skill names for Skill Gap Detector
+    try {
+      const d = await apiGet<{ roadmap: { skill_name: string }[] }>("/skills/roadmap");
+      setUserSkillNames((d.roadmap || []).map((r) => r.skill_name.toLowerCase()));
     } catch { /* non-fatal */ }
   }, []);
 
@@ -2583,6 +2591,59 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
     };
     return map[t] || map.news;
   };
+
+  /* ─── Research Intelligence: computed data ─── */
+
+  // 2a. Threat Actor Tracking: watched entities with mentions in feed
+  const watchedEntities = entities.filter((e) => e.watch === 1);
+  const entityMentions = watchedEntities.map((ent) => {
+    const mentionCount = displayItems.filter((item) => {
+      const text = `${item.title} ${item.summary}`.toLowerCase();
+      return text.includes(ent.name.toLowerCase());
+    }).length;
+    return { ...ent, mentionCount };
+  }).filter((e) => e.mentionCount > 0);
+
+  // 2b. CVE Radar: filter items that are CVEs or mention CVE patterns
+  const cveItems = displayItems.filter((item) =>
+    item.itemType === "cve" || /CVE-\d{4}-\d+/i.test(item.title) || /CVE-\d{4}-\d+/i.test(item.summary)
+  );
+
+  // 2c. Read Later Queue: saved but not yet read items
+  const readLaterQueue = displayItems.filter((item) => item.saved && !item.read);
+
+  // 2e. Skill Gap Detector: extract tools/tech from feed not in user's skills
+  const TECH_PATTERNS = [
+    /\b(kubernetes|k8s)\b/i, /\b(docker|containers?)\b/i, /\b(terraform)\b/i,
+    /\b(ansible)\b/i, /\b(python)\b/i, /\b(rust)\b/i, /\b(golang|go\s+lang)\b/i,
+    /\b(aws|azure|gcp)\b/i, /\b(wireshark)\b/i, /\b(burp\s*suite)\b/i,
+    /\b(nmap)\b/i, /\b(metasploit)\b/i, /\b(splunk)\b/i, /\b(sentinel)\b/i,
+    /\b(crowdstrike)\b/i, /\b(ghidra)\b/i, /\b(ida\s*pro)\b/i,
+    /\b(zeek|bro)\b/i, /\b(suricata)\b/i, /\b(yara)\b/i, /\b(osquery)\b/i,
+    /\b(mitre\s*att&?ck)\b/i, /\b(soar)\b/i, /\b(siem)\b/i,
+    /\b(devsecops)\b/i, /\b(threat\s*hunting)\b/i, /\b(malware\s*analysis)\b/i,
+    /\b(reverse\s*engineering)\b/i, /\b(cloud\s*security)\b/i, /\b(zero\s*trust)\b/i,
+  ];
+  const skillGaps = (() => {
+    const found = new Map<string, number>();
+    for (const item of displayItems.slice(0, 50)) {
+      const text = `${item.title} ${item.summary}`;
+      for (const p of TECH_PATTERNS) {
+        const match = text.match(p);
+        if (match) {
+          const tech = match[1] || match[0];
+          const normalized = tech.toLowerCase().trim();
+          // Skip if user already has this skill
+          if (userSkillNames.some((s) => s.includes(normalized) || normalized.includes(s))) continue;
+          found.set(normalized, (found.get(normalized) || 0) + 1);
+        }
+      }
+    }
+    return [...found.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([tech, count]) => ({ tech, count }));
+  })();
 
   return (
     <div className="space-y-3">
@@ -2878,6 +2939,117 @@ function ResearchWidgets({ research: localResearch, refresh }: { research: Resea
             </div>
             <ProgressBar value={displayItems.length > 0 ? (readCount / displayItems.length) * 100 : 0} gradient="from-indigo-500 to-violet-500" />
           </Card>
+
+          {/* 2a. Threat Actor Tracking */}
+          {entityMentions.length > 0 && (
+            <Card title="Threat Actor Alerts" icon="🎭">
+              <div className="space-y-1.5">
+                {entityMentions.map((e) => (
+                  <div key={e.id} className="flex items-center justify-between rounded-lg bg-red-500/5 px-3 py-2 border border-red-500/10">
+                    <div>
+                      <span className="text-xs text-white font-medium">{e.name}</span>
+                      <span className="text-[10px] text-zinc-500 ml-1">({e.type})</span>
+                    </div>
+                    <span className="text-[10px] bg-red-500/20 text-red-400 rounded-full px-2 py-0.5 font-medium">
+                      {e.mentionCount} mention{e.mentionCount !== 1 ? "s" : ""} in feed
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* 2b. CVE Radar */}
+          {cveItems.length > 0 && (
+            <Card title="CVE Radar" icon="🛡️">
+              <div className="space-y-1.5 max-h-40 overflow-auto">
+                {cveItems.slice(0, 8).map((item) => {
+                  const cveMatch = item.title.match(/CVE-\d{4}-\d+/i) || item.summary.match(/CVE-\d{4}-\d+/i);
+                  return (
+                    <a key={item.id} href={item.url} target="_blank" rel="noopener noreferrer"
+                      className="block rounded-lg bg-rose-500/5 px-3 py-2 hover:bg-rose-500/10 transition border border-rose-500/10">
+                      <div className="flex items-center gap-2">
+                        {cveMatch && <span className="text-[10px] bg-rose-500/20 text-rose-400 rounded-full px-1.5 py-0.5 font-mono shrink-0">{cveMatch[0]}</span>}
+                        <span className="text-[10px] text-white truncate">{item.title} ↗</span>
+                      </div>
+                      <div className="text-[9px] text-zinc-500 mt-0.5">{item.source} · {urgencyIcon(item.urgency)} {item.urgency}</div>
+                    </a>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* 2c. Read Later Queue */}
+          {readLaterQueue.length > 0 && (
+            <Card title="Read Later" icon="📑" actions={
+              <span className="text-[10px] text-zinc-500">{readLaterQueue.length} queued</span>
+            }>
+              <div className="space-y-1.5 max-h-40 overflow-auto">
+                {readLaterQueue.slice(0, 8).map((item) => (
+                  <div key={item.id} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2 hover:bg-white/10 transition">
+                    <div className="min-w-0 flex-1 mr-2">
+                      <a href={item.url} target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] text-white hover:underline truncate block">{item.title} ↗</a>
+                      <div className="text-[9px] text-zinc-500">{item.source}</div>
+                    </div>
+                    <button onClick={() => handleMarkRead(item.id, true)}
+                      className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 shrink-0 hover:bg-indigo-500/30 transition">
+                      ✓ Read
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* 2d. Daily Briefing Card — top 3 trends with action items */}
+          {trends.length > 0 && (
+            <Card title="Daily Intel Brief" icon="📋">
+              <div className="space-y-2">
+                {trends.slice(0, 3).map((t, i) => {
+                  const action = t.momentum_score > 2 ? "Investigate immediately"
+                    : t.momentum_score > 1 ? "Monitor closely"
+                    : "Track for awareness";
+                  return (
+                    <div key={t.id} className="rounded-lg bg-white/5 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-indigo-400">{i + 1}.</span>
+                        <span className="text-xs text-white font-medium">{t.topic}</span>
+                        {t.momentum_score > 1.5 && (
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-400 rounded-full px-1.5 py-0.5">↑ trending</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-0.5">{t.mention_count} mentions · momentum {t.momentum_score.toFixed(1)}x</div>
+                      <div className="text-[10px] text-amber-400/80 mt-0.5">→ {action}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* 2e. Skill Gap Detector */}
+          {skillGaps.length > 0 && (
+            <Card title="Skill Gap Detector" icon="🔍">
+              <div className="text-[10px] text-zinc-500 mb-2">Tools & tech mentioned in your feed but not in your skills:</div>
+              <div className="space-y-1.5">
+                {skillGaps.map(({ tech, count }) => (
+                  <div key={tech} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-white font-medium capitalize">{tech}</span>
+                      <span className="text-[9px] text-zinc-500">{count} mention{count !== 1 ? "s" : ""}</span>
+                    </div>
+                    <button
+                      onClick={() => apiPost("/skills/suggestions", { proposed_skill_name: tech, reason_md: `Detected ${count} mentions in research feed` }).catch(() => {})}
+                      className="text-[9px] px-2 py-0.5 rounded bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 transition">
+                      + Add Skill
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       </div>
     </div>
