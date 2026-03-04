@@ -241,6 +241,9 @@ export async function runStocksRefresh(db: D1Database, userId: string) {
 const STOCK_NEWS_FEEDS = [
   { name: "MarketWatch", url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
   { name: "CNBC", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
+  { name: "Reuters Tech", url: "https://feeds.reuters.com/reuters/technologyNews" },
+  { name: "WSJ Markets", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
+  { name: "SEC Litigation", url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=LIT&dateb=&owner=include&count=40&search_text=&action=getcompany&RSS=1" },
 ];
 
 export async function runStocksNewsScan(db: D1Database, userId: string) {
