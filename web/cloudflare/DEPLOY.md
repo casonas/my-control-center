@@ -92,7 +92,7 @@ The app stores trusted-device state in a signed, httpOnly cookie (`mcc_mfa_trust
 2. Add both variables to **Production** and **Preview** (if you use both).
 3. Redeploy the Pages project.
 4. Sign in once, then verify response headers include:
-   - `set-cookie: mcc_mfa_trust=...; Max-Age=86400; HttpOnly; SameSite=lax`
+   - `set-cookie: mcc_mfa_trust=...; Max-Age=86400; HttpOnly; SameSite=Lax`
 5. If you rotate `MCC_COOKIE_SIGNING_SECRET`, existing trusted-device cookies are invalid and users must sign in again once.
 6. If Cloudflare Access OTP is enabled, expect Access prompts separately (this app cookie does not bypass Access).
 

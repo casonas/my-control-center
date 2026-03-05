@@ -99,7 +99,8 @@ Then just run `npm run dev` and you're ready to go!
     MCC_COOKIE_SIGNING_SECRET=generate-a-long-random-secret
     NEXT_PUBLIC_API_BASE=/api
     ```
-  - [ ] Use the **same values** for both **Production** and **Preview** environments unless you intentionally want different login sessions per environment
+  - [ ] Use the **same values** for both **Production** and **Preview** environments
+  - [ ] Only use different values if you intentionally want separate login sessions per environment
   
   **Option B: Via CLI**
   - [ ] Build the app: `npm run build`
