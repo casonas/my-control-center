@@ -5,7 +5,12 @@ export const runtime = "edge";
 // No D1 or getRequestContext() required — uses stateless signed cookies.
 //
 
-import { createSession, rememberMfaDevice, verifyPassword } from "@/lib/auth";
+import {
+  createSession,
+  MFA_TRUST_MAX_AGE,
+  rememberMfaDevice,
+  verifyPassword,
+} from "@/lib/auth";
 
 // This is a single-owner personal dashboard — the user identity is fixed.
 const OWNER_ID = "owner";
@@ -34,6 +39,6 @@ export async function POST(req: Request) {
     user: { id: OWNER_ID, username: OWNER_USERNAME },
     csrfToken,
     mfaDeviceRemembered: rememberMfaDeviceFor24h,
-    mfaDeviceRememberSeconds: rememberMfaDeviceFor24h ? 24 * 60 * 60 : 0,
+    mfaDeviceRememberSeconds: rememberMfaDeviceFor24h ? MFA_TRUST_MAX_AGE : 0,
   });
 }

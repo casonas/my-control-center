@@ -6,7 +6,7 @@ const SESSION_COOKIE = "mcc_session";
 const CSRF_COOKIE = "mcc_csrf";
 const MFA_TRUST_COOKIE = "mcc_mfa_trust";
 const SESSION_MAX_AGE = 180 * 24 * 60 * 60; // 180 days in seconds
-const MFA_TRUST_MAX_AGE = 24 * 60 * 60; // 24 hours in seconds
+export const MFA_TRUST_MAX_AGE = 24 * 60 * 60; // 24 hours in seconds
 
 interface SessionPayload {
   userId: string;

@@ -179,7 +179,7 @@ export async function authMe(): Promise<AuthState> {
 export async function login(
   password: string,
   rememberDays = 180,
-  rememberMfaDeviceFor24h = true
+  rememberMfaDevice = true
 ) {
   // Login itself should not require CSRF (no session yet).
   const res = await fetch(buildUrl("/auth/login"), {
@@ -189,7 +189,7 @@ export async function login(
     body: JSON.stringify({
       password,
       remember_days: rememberDays,
-      remember_mfa_device: rememberMfaDeviceFor24h,
+      remember_mfa_device: rememberMfaDevice,
     }),
   });
 
