@@ -14,7 +14,12 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from jobs_scraper import parse_google_proxy, parse_searxng, SURGICAL_QUERIES
+from jobs_scraper import (
+    parse_google_proxy,
+    parse_searxng,
+    SURGICAL_QUERIES,
+    DEFAULT_GOOGLE_PROXY_TEMPLATES,
+)
 
 
 def now_iso() -> str:
@@ -37,17 +42,22 @@ def main() -> None:
     else:
         print("[test] searxng skipped (SEARXNG_BASE_URL not set)")
 
-    proxy = os.getenv(
-        "GOOGLE_PROXY_TEMPLATE",
-        "https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us",
-    ).strip()
-    try:
-        rows = parse_google_proxy(proxy, q, fetched_at)
-        print(f"[test] google-proxy count={len(rows)} sample={(rows[0]['url'] if rows else 'none')}")
-    except Exception as e:
-        print(f"[test] google-proxy failed: {e}")
+    templates_env = os.getenv("GOOGLE_PROXY_TEMPLATES", "").strip()
+    if templates_env:
+        templates = [t.strip() for t in templates_env.split(",") if t.strip()]
+    else:
+        single = os.getenv("GOOGLE_PROXY_TEMPLATE", "").strip()
+        templates = [single] if single else DEFAULT_GOOGLE_PROXY_TEMPLATES
+
+    for idx, proxy in enumerate(templates, start=1):
+        try:
+            rows = parse_google_proxy(proxy, q, fetched_at)
+            print(f"[test] google-proxy[{idx}] count={len(rows)} sample={(rows[0]['url'] if rows else 'none')} template={proxy}")
+            if rows:
+                break
+        except Exception as e:
+            print(f"[test] google-proxy[{idx}] failed: {e} template={proxy}")
 
 
 if __name__ == "__main__":
     main()
-

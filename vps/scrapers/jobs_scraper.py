@@ -46,6 +46,11 @@ ROLE_RE = re.compile(
 EXCLUDE_REMOTE = os.getenv("JOBS_EXCLUDE_REMOTE", "1").strip().lower() not in {"0", "false", "no"}
 ENABLE_SURGICAL = os.getenv("JOBS_ENABLE_SURGICAL", "1").strip().lower() not in {"0", "false", "no"}
 ENABLE_GOOGLE_PROXY = os.getenv("JOBS_ENABLE_GOOGLE_PROXY", "1").strip().lower() not in {"0", "false", "no"}
+DEFAULT_GOOGLE_PROXY_TEMPLATES = [
+    "https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us",
+    "https://r.jina.ai/http://duckduckgo.com/?q={q}",
+    "https://r.jina.ai/http://www.startpage.com/do/dsearch?query={q}",
+]
 
 
 def now_iso() -> str:
@@ -297,19 +302,26 @@ def main() -> None:
                     feed_stats[source_name] = 0
 
     if ENABLE_GOOGLE_PROXY:
-        proxy_template = os.getenv(
-            "GOOGLE_PROXY_TEMPLATE",
-            "https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us",
-        ).strip()
-        # Reuse targeted query pack for proxy pulls.
+        templates_env = os.getenv("GOOGLE_PROXY_TEMPLATES", "").strip()
+        if templates_env:
+            templates = [t.strip() for t in templates_env.split(",") if t.strip()]
+        else:
+            single = os.getenv("GOOGLE_PROXY_TEMPLATE", "").strip()
+            templates = [single] if single else DEFAULT_GOOGLE_PROXY_TEMPLATES
+
+        # Reuse targeted query pack for proxy pulls and stop at first template that works per query.
         for q in SURGICAL_QUERIES[:2]:
             source_name = f"GoogleProxy {q[:24]}..."
-            try:
-                rows = parse_google_proxy(proxy_template, q, fetched_at)
-                feed_stats[source_name] = len(rows)
-                all_rows.extend(rows)
-            except Exception:
-                feed_stats[source_name] = 0
+            got_rows: list[dict[str, Any]] = []
+            for template in templates:
+                try:
+                    got_rows = parse_google_proxy(template, q, fetched_at)
+                    if got_rows:
+                        break
+                except Exception:
+                    continue
+            feed_stats[source_name] = len(got_rows)
+            all_rows.extend(got_rows)
 
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()

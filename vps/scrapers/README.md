@@ -61,13 +61,14 @@ Source-only test (without full ingestion):
 cd ~/my-control-center
 source .venv/bin/activate
 export SEARXNG_BASE_URL="https://search.yourdomain.com"
-export GOOGLE_PROXY_TEMPLATE="https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us"
+# Optional: comma-separated fallback templates
+export GOOGLE_PROXY_TEMPLATES="https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us,https://r.jina.ai/http://duckduckgo.com/?q={q},https://r.jina.ai/http://www.startpage.com/do/dsearch?query={q}"
 python vps/scrapers/test_search_sources.py
 ```
 
 Expected test output:
 - `searxng count=...`
-- `google-proxy count=...`
+- `google-proxy[1] ...` and fallback attempts if blocked
 
 ## Cron (every 30 minutes)
 ```cron
