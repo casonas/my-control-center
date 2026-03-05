@@ -1758,6 +1758,24 @@ function SportsWidgets(_props: { refresh: () => void }) {
     items?: number;
     error?: string;
   }
+  interface GameAnalysisSide {
+    record_overall?: string | null;
+    record_home?: string | null;
+    record_away?: string | null;
+    ppg?: number | null;
+    rpg?: number | null;
+    apg?: number | null;
+    fg_pct?: number | null;
+    three_pct?: number | null;
+    leaders?: { points?: string | null; rebounds?: string | null; assists?: string | null };
+  }
+  interface GameDetailPayload {
+    analysis?: {
+      insights?: string[];
+      home?: GameAnalysisSide;
+      away?: GameAnalysisSide;
+    } | null;
+  }
 
   const [games, setGames] = useState<Game[]>([]);
   const [watchlist, setWatchlist] = useState<WlTeam[]>([]);
@@ -1767,6 +1785,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const [addTeam, setAddTeam] = useState("");
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
   const [sourceHealth, setSourceHealth] = useState<SourceHealthItem[]>([]);
+  const [gameDetail, setGameDetail] = useState<GameDetailPayload | null>(null);
 
   // Line Movement state
   interface Movement { game_id: string; home_team: string; away_team: string; book: string; market: string; old_line: number; new_line: number; delta: number; direction: string; minutes_ago: number }
@@ -1875,6 +1894,17 @@ function SportsWidgets(_props: { refresh: () => void }) {
   }, [league]);
 
   useEffect(() => { loadGames(); loadWatchlist(); loadPredictions(); loadOdds(); loadNews(); loadMovements(); loadPropsBoard(); loadPicksLatest(); }, [loadGames, loadWatchlist, loadPredictions, loadOdds, loadNews, loadMovements, loadPropsBoard, loadPicksLatest]);
+  useEffect(() => {
+    if (!activeGameId) { setGameDetail(null); return; }
+    (async () => {
+      try {
+        const d = await apiGet<GameDetailPayload>(`/sports/game/${activeGameId}`);
+        setGameDetail(d || null);
+      } catch {
+        setGameDetail(null);
+      }
+    })();
+  }, [activeGameId, league]);
 
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
@@ -1915,6 +1945,33 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const activeOdds = odds.filter((o) => o.game_id === activeGameId);
   const teamAbbr = (name: string) =>
     name.split(" ").map((p) => p[0]).join("").slice(0, 3).toUpperCase();
+  const leagueSlugByKey: Record<string, string> = {
+    nba: "nba",
+    nfl: "nfl",
+    mlb: "mlb",
+    nhl: "nhl",
+  };
+  const getEspnEventId = (gameId: string | null | undefined): string | null => {
+    if (!gameId) return null;
+    const m = gameId.match(/^espn_(nba|nfl|mlb|nhl)_(\d+)$/i);
+    return m ? m[2] : null;
+  };
+  const getEspnGameUrl = (game: Game | null | undefined): string | null => {
+    if (!game) return null;
+    const eventId = getEspnEventId(game.id);
+    const slug = leagueSlugByKey[league];
+    if (!eventId || !slug) return null;
+    return `https://www.espn.com/${slug}/game/_/gameId/${eventId}`;
+  };
+  const leaderName = (text: string | null | undefined): string => {
+    if (!text) return "";
+    const idx = text.indexOf(" (");
+    return idx > 0 ? text.slice(0, idx).trim() : text.trim();
+  };
+  const getEspnPlayerSearchUrl = (name: string): string => {
+    const sport = leagueSlugByKey[league] || "nba";
+    return `https://www.espn.com/search/_/q/${encodeURIComponent(`${name} ${sport}`)}`;
+  };
   const cleanHeadline = (title: string) =>
     title
       .replace(/\s*\|\s*[^|]+$/, "")
@@ -2020,7 +2077,21 @@ function SportsWidgets(_props: { refresh: () => void }) {
                       {g.period ? ` · ${g.period}` : ""}
                       {g.clock ? ` ${g.clock}` : ""}
                     </div>
-                    <Badge color={g.status === "final" ? "zinc" : g.status === "live" ? "emerald" : "amber"}>{g.status}</Badge>
+                    <div className="flex items-center gap-2">
+                      {getEspnGameUrl(g) && (
+                        <a
+                          href={getEspnGameUrl(g) || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[9px] text-cyan-400 hover:underline"
+                          title="Open game on ESPN"
+                        >
+                          ESPN ↗
+                        </a>
+                      )}
+                      <Badge color={g.status === "final" ? "zinc" : g.status === "live" ? "emerald" : "amber"}>{g.status}</Badge>
+                    </div>
                   </div>
                   <div className="px-2 py-1.5 space-y-1">
                     <div className="grid grid-cols-[1fr_auto] items-center">
@@ -2079,41 +2150,96 @@ function SportsWidgets(_props: { refresh: () => void }) {
         )}
       </Card>
 
-      {/* Line Movement Tracker */}
-      {league === "nba" && (
-        <Card title="Line Movement" icon="📈">
-          {movements.length > 0 ? (
-            <div className="space-y-1.5 max-h-48 overflow-auto">
-              {movements.map((m, i) => (
-                <div key={`${m.game_id}-${m.book}-${i}`} className="rounded-xl bg-white/5 px-3 py-2">
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs text-white font-medium">{m.away_team} @ {m.home_team}</div>
-                    <span className={cx("text-[10px] px-1.5 py-0.5 rounded-full font-medium",
-                      m.direction === "steam" ? "bg-rose-500/20 text-rose-400" :
-                      m.direction === "reverse" ? "bg-amber-500/20 text-amber-400" :
-                      "bg-zinc-500/20 text-zinc-400"
-                    )}>{m.direction}</span>
+      {/* Game Analysis */}
+      <Card title="Game Analysis" icon="🧠">
+        {activeGame && gameDetail?.analysis ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs text-white font-semibold">{activeGame.away_team_name} @ {activeGame.home_team_name}</div>
+              {getEspnGameUrl(activeGame) && (
+                <a
+                  href={getEspnGameUrl(activeGame) || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-cyan-400 hover:underline shrink-0"
+                >
+                  Open Gamecast ↗
+                </a>
+              )}
+            </div>
+            {Array.isArray(gameDetail.analysis.insights) && gameDetail.analysis.insights.length > 0 && (
+              <div className="space-y-1">
+                {gameDetail.analysis.insights.map((line, i) => (
+                  <div key={`ins-${i}`} className="text-[10px] text-zinc-300 bg-white/5 rounded-lg px-2 py-1">{line}</div>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg bg-white/5 p-2">
+                <div className="text-[10px] text-zinc-400 mb-1">Home Snapshot</div>
+                <div className="text-[10px] text-white">Record: {gameDetail.analysis.home?.record_overall || "—"}</div>
+                <div className="text-[10px] text-zinc-300">PPG/RPG/APG: {gameDetail.analysis.home?.ppg ?? "—"} / {gameDetail.analysis.home?.rpg ?? "—"} / {gameDetail.analysis.home?.apg ?? "—"}</div>
+                <div className="mt-1 space-y-0.5">
+                  <div className="text-[10px] text-zinc-500">
+                    🏀 {gameDetail.analysis.home?.leaders?.points ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.home?.leaders?.points))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.home?.leaders?.points}
+                      </a>
+                    ) : "—"}
                   </div>
-                  <div className="flex items-center gap-2 mt-1 text-[10px]">
-                    <span className="text-zinc-500">{m.book}</span>
-                    <span className="text-zinc-400">{m.old_line > 0 ? "+" : ""}{m.old_line}</span>
-                    <span className="text-zinc-600">→</span>
-                    <span className={cx("font-medium", m.delta > 0 ? "text-emerald-400" : "text-rose-400")}>
-                      {m.new_line > 0 ? "+" : ""}{m.new_line}
-                    </span>
-                    <span className={cx("font-bold", m.delta > 0 ? "text-emerald-400" : "text-rose-400")}>
-                      ({m.delta > 0 ? "+" : ""}{m.delta})
-                    </span>
-                    <span className="text-zinc-600 ml-auto">{m.minutes_ago}m ago</span>
+                  <div className="text-[10px] text-zinc-500">
+                    🛡️ {gameDetail.analysis.home?.leaders?.rebounds ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.home?.leaders?.rebounds))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.home?.leaders?.rebounds}
+                      </a>
+                    ) : "—"}
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    🎯 {gameDetail.analysis.home?.leaders?.assists ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.home?.leaders?.assists))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.home?.leaders?.assists}
+                      </a>
+                    ) : "—"}
                   </div>
                 </div>
-              ))}
+              </div>
+              <div className="rounded-lg bg-white/5 p-2">
+                <div className="text-[10px] text-zinc-400 mb-1">Away Snapshot</div>
+                <div className="text-[10px] text-white">Record: {gameDetail.analysis.away?.record_overall || "—"}</div>
+                <div className="text-[10px] text-zinc-300">PPG/RPG/APG: {gameDetail.analysis.away?.ppg ?? "—"} / {gameDetail.analysis.away?.rpg ?? "—"} / {gameDetail.analysis.away?.apg ?? "—"}</div>
+                <div className="mt-1 space-y-0.5">
+                  <div className="text-[10px] text-zinc-500">
+                    🏀 {gameDetail.analysis.away?.leaders?.points ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.away?.leaders?.points))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.away?.leaders?.points}
+                      </a>
+                    ) : "—"}
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    🛡️ {gameDetail.analysis.away?.leaders?.rebounds ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.away?.leaders?.rebounds))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.away?.leaders?.rebounds}
+                      </a>
+                    ) : "—"}
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    🎯 {gameDetail.analysis.away?.leaders?.assists ? (
+                      <a href={getEspnPlayerSearchUrl(leaderName(gameDetail.analysis.away?.leaders?.assists))} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        {gameDetail.analysis.away?.leaders?.assists}
+                      </a>
+                    ) : "—"}
+                  </div>
+                </div>
+              </div>
             </div>
-          ) : (
-            <div className="text-[10px] text-zinc-500 py-2">No significant line movements detected. Movements appear after multiple refreshes when odds shift ≥0.5 pts.</div>
-          )}
-        </Card>
-      )}
+          </div>
+        ) : activeGame ? (
+          <div className="text-[10px] text-zinc-400">Select a game and refresh to load team profile and leader analysis.</div>
+        ) : (
+          <div className="text-[10px] text-zinc-400">Select a game above to view analysis.</div>
+        )}
+      </Card>
+
 
       {/* Projections for active game */}
       <Card title="Projections" icon="🎯">
@@ -2274,28 +2400,6 @@ function SportsWidgets(_props: { refresh: () => void }) {
               </div>
             ) : (
               <EmptyState icon="📋" text="No props loaded. Use POST /api/sports/props/ingest to add props, then Refresh." />
-            )}
-          </Card>
-
-          {/* Top Plays Card */}
-          <Card title="Top Plays" icon="🎯">
-            {pickCards?.top_plays && pickCards.top_plays.length > 0 ? (
-              <div className="space-y-1.5">
-                {pickCards.top_plays.map((leg, i) => (
-                  <div key={`tp-${i}`} className="rounded-xl bg-white/5 px-3 py-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[11px] text-white font-semibold">{leg.player}</div>
-                      <span className={cx("text-[9px] font-bold px-1.5 py-0.5 rounded-full",
-                        leg.confidence >= 0.7 ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
-                      )}>{(leg.confidence * 100).toFixed(0)}%</span>
-                    </div>
-                    <div className="text-[10px] text-zinc-300 mt-0.5">{leg.pick} {leg.market} {leg.line ?? ""}</div>
-                    <div className="text-[9px] text-zinc-500 mt-0.5">{leg.reason}</div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon="🎯" text={generationStatus || "No picks yet. Load props and click Generate Picks."} />
             )}
           </Card>
 
