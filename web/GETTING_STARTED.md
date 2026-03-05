@@ -96,8 +96,10 @@ Then just run `npm run dev` and you're ready to go!
   - [ ] Add environment variables in Pages settings:
     ```
     MCC_PASSWORD=your-secure-password-here
+    MCC_COOKIE_SIGNING_SECRET=generate-a-long-random-secret
     NEXT_PUBLIC_API_BASE=/api
     ```
+  - [ ] Use the **same values** for both **Production** and **Preview** environments unless you intentionally want different login sessions per environment
   
   **Option B: Via CLI**
   - [ ] Build the app: `npm run build`
@@ -250,6 +252,13 @@ You now have:
 **Can't login?**
 - Make sure `MCC_PASSWORD` is set in environment variables
 - Try clearing browser cookies
+
+**MFA/device remember (24h) not sticking?**
+- Make sure `MCC_COOKIE_SIGNING_SECRET` is set in Cloudflare Pages environment variables
+- If you changed `MCC_COOKIE_SIGNING_SECRET`, all existing sessions/trusted-device cookies are invalidated (users must sign in again once)
+- Confirm you are using HTTPS on your real domain (production cookies are `Secure`)
+- If Cloudflare Access (Zero Trust) is enabled with OTP, that is a separate login layer and may still prompt independently of app MFA
+- Check browser settings/extensions are not blocking cookies for your site
 
 **Agents not working?**
 - Check Cloudflare Pages logs for errors

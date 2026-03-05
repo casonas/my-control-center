@@ -82,6 +82,20 @@ Then set `NEXT_PUBLIC_API_BASE=https://api.yourdomain.com` in your Pages environ
 3. Set authentication policy (email OTP, GitHub, etc.)
 4. This adds an extra auth layer on top of your password login
 
+## Step 5.1: Ensure 24-hour MFA "Remember this device" Works
+
+The app stores trusted-device state in a signed, httpOnly cookie (`mcc_mfa_trust`) for 24 hours.
+
+1. In **Cloudflare Dashboard → Pages → Your project → Settings → Environment variables**, set:
+   - `MCC_PASSWORD` (your app login password)
+   - `MCC_COOKIE_SIGNING_SECRET` (long random secret, different from password)
+2. Add both variables to **Production** and **Preview** (if you use both).
+3. Redeploy the Pages project.
+4. Sign in once, then verify response headers include:
+   - `set-cookie: mcc_mfa_trust=...; Max-Age=86400; HttpOnly; SameSite=lax`
+5. If you rotate `MCC_COOKIE_SIGNING_SECRET`, existing trusted-device cookies are invalid and users must sign in again once.
+6. If Cloudflare Access OTP is enabled, expect Access prompts separately (this app cookie does not bypass Access).
+
 ## Step 6: Enable Workers AI for Vector Search
 
 ```bash
