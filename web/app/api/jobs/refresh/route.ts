@@ -41,21 +41,19 @@ export async function POST(req: Request) {
 
       let sources = srcResult.results || [];
 
-      if (sources.length === 0) {
-        const now = new Date().toISOString();
-        for (const src of DEFAULT_JOB_SOURCES) {
-          const id = crypto.randomUUID();
-          await db
-            .prepare(`INSERT OR IGNORE INTO job_sources (id, user_id, name, type, url, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)`)
-            .bind(id, userId, src.name, src.type, src.url, now)
-            .run();
-        }
-        const refreshed = await db
-          .prepare(`SELECT id, name, url, type FROM job_sources WHERE user_id = ? AND enabled = 1`)
-          .bind(userId)
-          .all<{ id: string; name: string; url: string; type: string }>();
-        sources = refreshed.results || [];
+      // Always upsert missing defaults so users don't get stuck with one source.
+      const seededAt = new Date().toISOString();
+      for (const src of DEFAULT_JOB_SOURCES) {
+        await db
+          .prepare(`INSERT OR IGNORE INTO job_sources (id, user_id, name, type, url, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)`)
+          .bind(crypto.randomUUID(), userId, src.name, src.type, src.url, seededAt)
+          .run();
       }
+      const refreshed = await db
+        .prepare(`SELECT id, name, url, type FROM job_sources WHERE user_id = ? AND enabled = 1`)
+        .bind(userId)
+        .all<{ id: string; name: string; url: string; type: string }>();
+      sources = refreshed.results || sources;
 
       let fetched = 0;
       let inserted = 0;
@@ -80,8 +78,15 @@ export async function POST(req: Request) {
             fetched++;
 
             const id = crypto.randomUUID();
+            const summaryText = item.summary || "";
+            const companyFromSummary =
+              summaryText.match(/\bcompany\s*:\s*([^|\n\r<]+)/i)?.[1]?.trim() ||
+              summaryText.match(/\bemployer\s*:\s*([^|\n\r<]+)/i)?.[1]?.trim() ||
+              summaryText.match(/\bat\s+([A-Z][\w&.,' -]{1,80})/i)?.[1]?.trim() ||
+              null;
             const companyMatch = item.title.match(/(?:at|@|-|–|—)\s*(.+?)(?:\s*\(|$)/i);
-            const company = companyMatch ? companyMatch[1].trim() : "Unknown";
+            let company = companyFromSummary || (companyMatch ? companyMatch[1].trim() : "Unknown");
+            if (/^weworkremotely$/i.test(company)) company = "Unknown";
             const title = item.title.replace(/(?:at|@)\s*.+$/, "").trim() || item.title;
             const location = item.summary?.match(/(?:Location|loc):\s*([^,\n]+)/i)?.[1]?.trim() || null;
 

@@ -115,7 +115,7 @@ export async function POST(req: Request) {
 
     // Forward agent routing context as headers for instant dispatch
     const agentId = req.headers.get("x-agent-id");
-    const sessionId = req.headers.get("x-agent-session");
+    const sessionId = req.headers.get("x-agent-session") || chatSessionId;
     const collaborators = req.headers.get("x-collab-agents");
     if (agentId) upstreamHeaders.set("X-Agent-Id", agentId);
     if (sessionId) upstreamHeaders.set("X-Agent-Session", sessionId);

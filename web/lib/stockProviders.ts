@@ -896,8 +896,11 @@ export function sanitizeText(raw: string): string {
 export const STOCK_NEWS_FEEDS = [
   { name: "MarketWatch", url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
   { name: "CNBC", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" },
-  { name: "Reuters Tech", url: "https://feeds.reuters.com/reuters/technologyNews" },
-  { name: "WSJ Markets", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml" },
+  { name: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews" },
+  { name: "Reuters Markets", url: "https://feeds.reuters.com/news/wealth" },
+  { name: "Yahoo Finance", url: "https://finance.yahoo.com/news/rssindex" },
+  { name: "Google News: Stock Market", url: "https://news.google.com/rss/search?q=stock+market+OR+earnings+OR+guidance&hl=en-US&gl=US&ceid=US:en" },
+  { name: "Google News: Large Caps", url: "https://news.google.com/rss/search?q=AAPL+OR+NVDA+OR+TSLA+OR+MSFT+stock&hl=en-US&gl=US&ceid=US:en" },
   { name: "SEC Litigation", url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=LIT&dateb=&owner=include&count=40&search_text=&action=getcompany&RSS=1" },
 ];
 
@@ -934,10 +937,37 @@ const STRONG_CATALYST_PATTERNS = [
   /\bguidance\b|\boutlook\b|\braise[ds]?\s.*guidance\b|\blower[eds]?\s.*forecast\b/i,
   /\bupgrade[ds]?\b|\bdowngrade[ds]?\b|\bprice\s*target\b|\banalyst\b/i,
   /\bacquisition\b|\bmerger\b|\bm\s*&\s*a\b|\bbuyout\b|\btakeover\b/i,
-  /\blaunch(es|ed)?\b|\bfda\s*approv(al|ed)\b|\bnew\s+product\b/i,
+  /\blaunch(es|ed)?\b|\bfda\s*approv(al|ed)\b|\bnew\s+product\b|\bchip\b|\biphone\b|\bmac\b|\bsoftware\b/i,
   /\blawsuit\b|\bprobe\b|\bsec\s+(charges?|investigat)\b|\bfraud\b/i,
   /\bbankrupt(cy)?\b|\bdefault\b|\bdelisting\b/i,
 ];
+
+const MARKET_KEYWORDS = [
+  /\bstock(s)?\b|\bshares?\b|\bmarket(s)?\b|\bwall\s*street\b/i,
+  /\bearnings?\b|\brevenue\b|\beps\b|\bguidance\b|\boutlook\b/i,
+  /\banalyst\b|\bupgrade\b|\bdowngrade\b|\bprice\s*target\b/i,
+  /\bfed\b|\binflation\b|\bcpi\b|\brates?\b|\byield(s)?\b|\btreasury\b/i,
+  /\bnasdaq\b|\bs&p\b|\bdow\b|\brussell\b|\bindex\b/i,
+  /\bipo\b|\bbuyback\b|\bdividend\b|\bmerger\b|\bacquisition\b/i,
+  /\bbitcoin\b|\bcrypto\b|\beth\b|\betf\b/i,
+];
+
+function isMarketRelevantText(title: string, summary?: string | null): boolean {
+  const text = `${title} ${summary || ""}`;
+  for (const p of MARKET_KEYWORDS) if (p.test(text)) return true;
+  return false;
+}
+
+function selectFeedsForScan(feeds: typeof STOCK_NEWS_FEEDS): typeof STOCK_NEWS_FEEDS {
+  const cap = getEnvInt("STOCK_NEWS_FEED_CAP", 6);
+  if (feeds.length <= cap) return feeds;
+  const now = new Date();
+  const slot = now.getUTCHours() * 2 + (now.getUTCMinutes() >= 30 ? 1 : 0);
+  const start = slot % feeds.length;
+  const selected: typeof STOCK_NEWS_FEEDS = [];
+  for (let i = 0; i < cap; i++) selected.push(feeds[(start + i) % feeds.length]);
+  return selected;
+}
 
 /** Returns false for generic/low-value headlines (market wraps, roundups, etc.) */
 export function isQualityHeadline(title: string): boolean {
@@ -1164,7 +1194,7 @@ export async function scanNewsFeeds(
 
   // 2) RSS feeds (always — broad market coverage)
   const perFeedCap = getEnvInt("STOCK_NEWS_FEED_ITEM_CAP", 25);
-  for (const feed of STOCK_NEWS_FEEDS) {
+  for (const feed of selectFeedsForScan(STOCK_NEWS_FEEDS)) {
     const start = Date.now();
     try {
       const res = await fetchWithRetry(feed.url);
@@ -1182,6 +1212,7 @@ export async function scanNewsFeeds(
         // Try to extract a ticker from the headline
         const extracted = extractTickersFromText(`${title} ${summary || ""}`, watchlistSet);
         const ticker = extracted.length > 0 ? extracted[0] : null;
+        if (!ticker && !isMarketRelevantText(title, summary)) continue;
         const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, feed.name, item.publishedAt);
         if (rel.impactScore < 1) continue;
         try {

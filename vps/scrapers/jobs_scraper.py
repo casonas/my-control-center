@@ -20,14 +20,15 @@ OUT_FILE = "vps/scrapers/output/jobs.json"
 MAX_ITEMS_PER_FEED = 120
 
 FEEDS: list[tuple[str, str]] = [
-    ("Indeed Cybersecurity Analyst", "https://www.indeed.com/rss?q=cybersecurity+analyst&sort=date"),
-    ("Indeed SOC Analyst", "https://www.indeed.com/rss?q=soc+analyst&sort=date"),
-    ("Indeed Security Analyst", "https://www.indeed.com/rss?q=security+analyst&sort=date"),
-    ("Indeed Threat Analyst", "https://www.indeed.com/rss?q=threat+analyst&sort=date"),
     ("WeWorkRemotely Programming", "https://weworkremotely.com/categories/remote-programming-jobs.rss"),
     ("WeWorkRemotely DevOps", "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss"),
-    ("Google News Cyber Jobs", "https://news.google.com/rss/search?q=cybersecurity+jobs+analyst&hl=en-US&gl=US&ceid=US:en"),
+    ("Google News Cyber Jobs", "https://news.google.com/rss/search?q=(%22cybersecurity+analyst%22+OR+%22soc+analyst%22+OR+%22security+engineer%22)+jobs&hl=en-US&gl=US&ceid=US:en"),
 ]
+
+ROLE_RE = re.compile(
+    r"\b(cyber|security|soc|threat|incident response|dfir|blue team|siem|iam|cloud security|appsec|security engineer|security analyst)\b",
+    re.IGNORECASE,
+)
 
 
 def now_iso() -> str:
@@ -53,6 +54,13 @@ def dedupe_key(url: str, title: str, company: str) -> str:
 
 
 def extract_company(title: str, summary: str) -> str:
+    # Common RSS title format: "Company: Role"
+    m = re.match(r"^\s*([^:]{2,80})\s*:\s*.+$", title)
+    if m:
+        candidate = m.group(1).strip()
+        if candidate and not candidate.lower().startswith(("a company", "an employer")):
+            return candidate[:120]
+
     text = f"{title} {summary}"
     patterns = [
         r"(?:\bat\b|\@)\s+([A-Z][\w&.,' -]{1,80})",
@@ -86,6 +94,8 @@ def parse_feed(source_name: str, url: str, fetched_at: str) -> list[dict[str, An
         link = str(getattr(entry, "link", "") or "").strip()
         summary = str(getattr(entry, "summary", "") or "")
         if not title or not link:
+            continue
+        if not ROLE_RE.search(title):
             continue
 
         company = extract_company(title, summary)
@@ -145,4 +155,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

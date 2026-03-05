@@ -10,7 +10,21 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const status = url.searchParams.get("status") || "new";
     try {
-      const r = await db.prepare(`SELECT * FROM skill_suggestions WHERE user_id = ? AND status = ? ORDER BY updated_at DESC LIMIT 20`).bind(userId, status).all();
+      const r = await db.prepare(
+        `SELECT s.*
+         FROM skill_suggestions s
+         JOIN (
+           SELECT proposed_skill_name, MAX(updated_at) AS latest
+           FROM skill_suggestions
+           WHERE user_id = ? AND status = ? AND updated_at >= datetime('now', '-21 days')
+           GROUP BY proposed_skill_name
+         ) latest_per_skill
+           ON s.proposed_skill_name = latest_per_skill.proposed_skill_name
+          AND s.updated_at = latest_per_skill.latest
+         WHERE s.user_id = ? AND s.status = ?
+         ORDER BY s.updated_at DESC
+         LIMIT 20`
+      ).bind(userId, status, userId, status).all();
       return Response.json({ suggestions: r.results || [] });
     } catch { return Response.json({ suggestions: [] }); }
   });

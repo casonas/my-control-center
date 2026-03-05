@@ -13,7 +13,7 @@ export async function GET(req: Request) {
     const limit = Math.min(parseInt(url.searchParams.get("limit") || "100", 10), 200);
 
     try {
-      const r = await db
+      let r = await db
         .prepare(
           `SELECT * FROM sports_props_board
            WHERE user_id = ? AND league = ?
@@ -22,11 +22,33 @@ export async function GET(req: Request) {
         )
         .bind(userId, league, limit)
         .all();
+      if ((r.results || []).length === 0 && userId !== "owner") {
+        r = await db
+          .prepare(
+            `SELECT * FROM sports_props_board
+             WHERE user_id = ? AND league = ?
+             ORDER BY edge_score DESC, fetched_at DESC
+             LIMIT ?`
+          )
+          .bind("owner", league, limit)
+          .all();
+      }
+      if ((r.results || []).length === 0) {
+        r = await db
+          .prepare(
+            `SELECT * FROM sports_props_board
+             WHERE league = ?
+             ORDER BY edge_score DESC, fetched_at DESC
+             LIMIT ?`
+          )
+          .bind(league, limit)
+          .all();
+      }
 
       const props = r.results || [];
 
       // Latest board_hash from most recent active row
-      const hashRow = await db
+      let hashRow = await db
         .prepare(
           `SELECT board_hash FROM sports_props_board
            WHERE user_id = ? AND league = ?
@@ -34,6 +56,26 @@ export async function GET(req: Request) {
         )
         .bind(userId, league)
         .first<{ board_hash: string }>();
+      if (!hashRow && userId !== "owner") {
+        hashRow = await db
+          .prepare(
+            `SELECT board_hash FROM sports_props_board
+             WHERE user_id = ? AND league = ?
+             ORDER BY fetched_at DESC LIMIT 1`
+          )
+          .bind("owner", league)
+          .first<{ board_hash: string }>();
+      }
+      if (!hashRow) {
+        hashRow = await db
+          .prepare(
+            `SELECT board_hash FROM sports_props_board
+             WHERE league = ?
+             ORDER BY fetched_at DESC LIMIT 1`
+          )
+          .bind(league)
+          .first<{ board_hash: string }>();
+      }
 
       const counts = await db
         .prepare(

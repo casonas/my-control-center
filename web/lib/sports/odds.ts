@@ -31,6 +31,11 @@ const APISPORTS_ODDS_URL_ENV: Record<League, string> = {
   nhl: "APISPORTS_ODDS_URL_NHL",
 };
 
+function preferEspnOdds(): boolean {
+  const v = (process.env.SPORTS_ODDS_PREFER_ESPN ?? "1").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "no");
+}
+
 function getOddsApiKeys(): string[] {
   const csv = (process.env.THE_ODDS_API_KEYS || "").trim();
   const single = (process.env.THE_ODDS_API_KEY || "").trim();
@@ -341,6 +346,14 @@ async function fetchEspnOddsFallback(league: League, gameIdMap: Map<string, stri
  */
 export async function fetchOdds(league: League): Promise<ProviderResult<NormalizedOdds>> {
   const gameIdMap = await fetchEspnGameIdMap(league);
+
+  // Cheapest path first: ESPN consensus lines (free) unless explicitly disabled.
+  if (preferEspnOdds()) {
+    const espnOdds = await fetchEspnOddsFallback(league, gameIdMap);
+    if (espnOdds.length > 0) {
+      return { ok: true, data: espnOdds, source: "espn-odds-fallback" };
+    }
+  }
 
   const apiKeys = getOddsApiKeys();
 

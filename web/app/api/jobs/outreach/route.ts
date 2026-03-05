@@ -24,12 +24,12 @@ export async function POST(req: Request) {
     const jobTitle = (body.job_title || "the role").trim();
     const company = (body.company || "your company").trim();
     const yourName = (body.your_name || "Your Name").trim();
-    const templateType = (body.template_type || "cold_email").trim();
+    const templateType = normalizeTemplateType((body.template_type || "cold_email").trim());
 
     const res = await fetch(`${baseUrl}/jobs/outreach`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": "MCC-Jobs/1.0", Accept: "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, template_type: templateType }),
       signal: AbortSignal.timeout(15_000),
     });
 
@@ -38,13 +38,17 @@ export async function POST(req: Request) {
       return Response.json(buildFallbackTemplate(templateType, { jobTitle, company, yourName }));
     }
 
-    const data = await res.json();
+    const data = await res.json() as Record<string, unknown>;
+    const hasRenderableDraft = typeof data.subject === "string" || typeof data.body_md === "string" || typeof data.message === "string";
+    if (!hasRenderableDraft) {
+      return Response.json(buildFallbackTemplate(templateType, { jobTitle, company, yourName }));
+    }
     return Response.json(data);
   } catch (err) {
     // Fallback template: keep UX functional even when upstream is unavailable.
     if (parsedBody) {
       return Response.json(
-        buildFallbackTemplate((parsedBody.template_type || "cold_email").trim(), {
+        buildFallbackTemplate(normalizeTemplateType((parsedBody.template_type || "cold_email").trim()), {
           jobTitle: (parsedBody.job_title || "the role").trim(),
           company: (parsedBody.company || "your company").trim(),
           yourName: (parsedBody.your_name || "Your Name").trim(),
@@ -59,6 +63,17 @@ export async function POST(req: Request) {
       }),
     );
   }
+}
+
+function normalizeTemplateType(input: string): string {
+  const t = input.trim().toLowerCase();
+  if (!t) return "cold_email";
+  if (t.includes("linkedin")) return "linkedin_connect";
+  if (t.includes("follow")) return "follow_up";
+  if (t.includes("thank")) return "thank_you";
+  if (t.includes("cold")) return "cold_email";
+  if (t.includes("hiring manager")) return "cold_email";
+  return t.replace(/\s+/g, "_");
 }
 
 function buildFallbackTemplate(

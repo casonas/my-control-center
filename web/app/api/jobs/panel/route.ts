@@ -72,7 +72,7 @@ export async function GET(req: Request) {
     const companies = await db.prepare(
       `SELECT company_name, tier, source, notes,
         (SELECT COUNT(*) FROM job_items ji WHERE ji.user_id = cw.user_id AND ji.company LIKE '%' || cw.company_name || '%' AND ji.status != 'dismissed') AS matching_jobs
-       FROM company_watchlist cw
+       FROM companies_watch cw
        WHERE user_id = ?
        ORDER BY matching_jobs DESC, company_name ASC
        LIMIT 20`,
