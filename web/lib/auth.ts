@@ -4,7 +4,9 @@ import { cookies } from "next/headers";
 
 const SESSION_COOKIE = "mcc_session";
 const CSRF_COOKIE = "mcc_csrf";
+const MFA_TRUST_COOKIE = "mcc_mfa_trust";
 const SESSION_MAX_AGE = 180 * 24 * 60 * 60; // 180 days in seconds
+const MFA_TRUST_MAX_AGE = 24 * 60 * 60; // 24 hours in seconds
 
 interface SessionPayload {
   userId: string;
@@ -147,6 +149,59 @@ export async function createSession(): Promise<{ sessionId: string; csrfToken: s
   });
 
   return { sessionId: token, csrfToken };
+}
+
+interface MfaTrustPayload {
+  userId: string;
+  expiresAt: number;
+  nonce: string;
+}
+
+async function signMfaTrust(payload: MfaTrustPayload): Promise<string> {
+  const payloadB64 = jsonToB64url(payload);
+  const sig = await hmacSha256B64url(getSigningSecret(), payloadB64);
+  return `${payloadB64}.${sig}`;
+}
+
+async function verifyMfaTrustToken(token: string): Promise<MfaTrustPayload | null> {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+
+  const [payloadB64, sig] = parts;
+  const expected = await hmacSha256B64url(getSigningSecret(), payloadB64);
+  if (!constantTimeEqual(sig, expected)) return null;
+
+  const payload = b64urlToJson<MfaTrustPayload>(payloadB64);
+  if (!payload) return null;
+  if (typeof payload.expiresAt !== "number" || payload.expiresAt < Date.now()) return null;
+  if (typeof payload.userId !== "string" || typeof payload.nonce !== "string") return null;
+  return payload;
+}
+
+export async function rememberMfaDevice(userId = "owner"): Promise<void> {
+  const payload: MfaTrustPayload = {
+    userId,
+    expiresAt: Date.now() + MFA_TRUST_MAX_AGE * 1000,
+    nonce: randomHex(16),
+  };
+  const token = await signMfaTrust(payload);
+  const cookieStore = await cookies();
+  cookieStore.set(MFA_TRUST_COOKIE, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: MFA_TRUST_MAX_AGE,
+    path: "/",
+  });
+}
+
+export async function hasTrustedMfaDevice(userId = "owner"): Promise<boolean> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(MFA_TRUST_COOKIE)?.value;
+  if (!token) return false;
+  const payload = await verifyMfaTrustToken(token);
+  if (!payload) return false;
+  return payload.userId === userId;
 }
 
 export async function getSession(): Promise<Session | null> {
