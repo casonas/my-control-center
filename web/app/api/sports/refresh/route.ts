@@ -18,8 +18,9 @@ export async function GET(req: Request) {
       const league = (url.searchParams.get("league") || "nba") as League;
       if (!VALID_LEAGUES.has(league)) return apiError("Invalid league", 400);
 
-      const [games, odds, news, predictions, lastRun] = await Promise.all([
+      const [games, gamesGlobal, odds, news, predictions, lastRun] = await Promise.all([
         db.prepare(`SELECT COUNT(*) AS cnt FROM sports_games WHERE user_id = ? AND league = ?`).bind(userId, league).first<{ cnt: number }>(),
+        db.prepare(`SELECT COUNT(*) AS cnt FROM sports_games WHERE league = ?`).bind(league).first<{ cnt: number }>(),
         db.prepare(`SELECT COUNT(*) AS cnt FROM sports_odds_market WHERE user_id = ? AND game_id LIKE ?`).bind(userId, `espn_${league}_%`).first<{ cnt: number }>(),
         db.prepare(`SELECT COUNT(*) AS cnt FROM sports_news_items WHERE user_id = ? AND league = ?`).bind(userId, league).first<{ cnt: number }>(),
         db.prepare(`SELECT COUNT(*) AS cnt FROM sports_model_predictions p JOIN sports_games g ON p.game_id = g.id WHERE p.user_id = ? AND g.league = ?`).bind(userId, league).first<{ cnt: number }>(),
@@ -31,6 +32,7 @@ export async function GET(req: Request) {
         league,
         cached: true,
         games: games?.cnt ?? 0,
+        games_global: gamesGlobal?.cnt ?? 0,
         odds: odds?.cnt ?? 0,
         news: news?.cnt ?? 0,
         predictions: predictions?.cnt ?? 0,
@@ -72,6 +74,7 @@ export async function POST(req: Request) {
           const waitSec = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
           const counts = await Promise.all([
             db.prepare(`SELECT COUNT(*) AS cnt FROM sports_games WHERE user_id = ? AND league = ?`).bind(userId, league).first<{ cnt: number }>(),
+            db.prepare(`SELECT COUNT(*) AS cnt FROM sports_games WHERE league = ?`).bind(league).first<{ cnt: number }>(),
             db.prepare(`SELECT COUNT(*) AS cnt FROM sports_odds_market WHERE user_id = ? AND game_id LIKE ?`).bind(userId, `espn_${league}_%`).first<{ cnt: number }>(),
             db.prepare(`SELECT COUNT(*) AS cnt FROM sports_news_items WHERE user_id = ? AND league = ?`).bind(userId, league).first<{ cnt: number }>(),
             db.prepare(
@@ -88,10 +91,10 @@ export async function POST(req: Request) {
             waitSec,
             status: "ok",
             league,
-            games: counts[0]?.cnt ?? 0,
-            odds: counts[1]?.cnt ?? 0,
-            news: counts[2]?.cnt ?? 0,
-            predictions: counts[3]?.cnt ?? 0,
+            games: Math.max(counts[0]?.cnt ?? 0, counts[1]?.cnt ?? 0),
+            odds: counts[2]?.cnt ?? 0,
+            news: counts[3]?.cnt ?? 0,
+            predictions: counts[4]?.cnt ?? 0,
             message: `Using cached data. Next refresh in ${waitSec}s.`,
           });
         }
