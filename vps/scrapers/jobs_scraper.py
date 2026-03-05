@@ -24,19 +24,17 @@ MAX_ITEMS_PER_FEED = 120
 MAX_ITEMS_PER_QUERY = 80
 
 FEEDS: list[tuple[str, str]] = [
-    ("WeWorkRemotely Programming", "https://weworkremotely.com/categories/remote-programming-jobs.rss"),
-    ("WeWorkRemotely DevOps", "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss"),
     ("Google News Cyber Jobs", "https://news.google.com/rss/search?q=(%22cybersecurity+analyst%22+OR+%22soc+analyst%22+OR+%22security+engineer%22)+jobs&hl=en-US&gl=US&ceid=US:en"),
 ]
 
 SEARXNG_QUERIES: list[str] = [
-    '("cybersecurity analyst" OR "security analyst" OR "soc analyst") site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co',
-    '("security engineer" OR "cloud security engineer" OR "threat analyst") site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co',
+    '("cybersecurity analyst" OR "security analyst" OR "soc analyst") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co OR site:app.joinhandshake.com OR site:glassdoor.com/Job OR site:indeed.com/viewjob)',
+    '("security engineer" OR "cloud security engineer" OR "threat analyst") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co OR site:app.joinhandshake.com OR site:glassdoor.com/Job OR site:indeed.com/viewjob)',
 ]
 SURGICAL_QUERIES: list[str] = [
-    '("SOC Analyst" OR "Cybersecurity Analyst") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co)',
-    '("Security Engineer" OR "Cloud Security Engineer" OR "Threat Analyst") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co)',
-    '("Incident Response" OR "DFIR" OR "Blue Team") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co)',
+    '("SOC Analyst" OR "Cybersecurity Analyst") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co OR site:app.joinhandshake.com OR site:glassdoor.com/Job OR site:indeed.com/viewjob OR site:dice.com/jobs)',
+    '("Security Engineer" OR "Cloud Security Engineer" OR "Threat Analyst") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co OR site:app.joinhandshake.com OR site:glassdoor.com/Job OR site:indeed.com/viewjob OR site:ziprecruiter.com/jobs)',
+    '("Incident Response" OR "DFIR" OR "Blue Team") ("hybrid" OR "onsite") ("United States") (site:linkedin.com/jobs OR site:boards.greenhouse.io OR site:jobs.lever.co OR site:app.joinhandshake.com OR site:glassdoor.com/Job OR site:indeed.com/viewjob OR site:builtin.com/jobs)',
 ]
 
 ROLE_RE = re.compile(
@@ -46,11 +44,37 @@ ROLE_RE = re.compile(
 EXCLUDE_REMOTE = os.getenv("JOBS_EXCLUDE_REMOTE", "1").strip().lower() not in {"0", "false", "no"}
 ENABLE_SURGICAL = os.getenv("JOBS_ENABLE_SURGICAL", "1").strip().lower() not in {"0", "false", "no"}
 ENABLE_GOOGLE_PROXY = os.getenv("JOBS_ENABLE_GOOGLE_PROXY", "1").strip().lower() not in {"0", "false", "no"}
+ENABLE_GOOGLE_NEWS = os.getenv("JOBS_ENABLE_GOOGLE_NEWS", "0").strip().lower() not in {"0", "false", "no"}
+REQUIRE_JOB_BOARD_URL = os.getenv("JOBS_REQUIRE_JOB_BOARD_URL", "1").strip().lower() not in {"0", "false", "no"}
 DEFAULT_GOOGLE_PROXY_TEMPLATES = [
     "https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us",
     "https://r.jina.ai/http://duckduckgo.com/?q={q}",
     "https://r.jina.ai/http://www.startpage.com/do/dsearch?query={q}",
 ]
+JOB_HOST_HINTS = (
+    "linkedin.com/jobs",
+    "boards.greenhouse.io",
+    "jobs.lever.co",
+    "app.joinhandshake.com",
+    "joinhandshake.com/jobs",
+    "glassdoor.com/job",
+    "glassdoor.com/Job",
+    "indeed.com/viewjob",
+    "ziprecruiter.com/jobs",
+    "dice.com/jobs",
+    "builtin.com/jobs",
+    "wellfound.com/jobs",
+    "monster.com/job-openings",
+    "jobs.ashbyhq.com",
+    "myworkdayjobs.com",
+    "smartrecruiters.com",
+    "bamboohr.com/jobs",
+    "workable.com",
+)
+NOISE_TITLE_RE = re.compile(
+    r"\b(career guide|what is a|jobs available right now|salary guide|how to become|training|course|certification)\b",
+    re.IGNORECASE,
+)
 
 
 def now_iso() -> str:
@@ -108,6 +132,11 @@ def extract_location(title: str, summary: str) -> str | None:
     return None
 
 
+def looks_like_job_url(url: str) -> bool:
+    u = canonical_url(url)
+    return any(h in u for h in JOB_HOST_HINTS)
+
+
 def is_remote_text(*parts: str | None) -> bool:
     text = " ".join([(p or "") for p in parts]).lower()
     return any(k in text for k in ("remote", "work from home", "wfh", "anywhere"))
@@ -123,6 +152,10 @@ def parse_feed(source_name: str, url: str, fetched_at: str) -> list[dict[str, An
         if not title or not link:
             continue
         if not ROLE_RE.search(title):
+            continue
+        if NOISE_TITLE_RE.search(title):
+            continue
+        if REQUIRE_JOB_BOARD_URL and not looks_like_job_url(link):
             continue
         if EXCLUDE_REMOTE and is_remote_text(title, summary):
             continue
@@ -175,6 +208,10 @@ def parse_searxng(base_url: str, query: str, fetched_at: str) -> list[dict[str, 
         if not title or not link:
             continue
         if not ROLE_RE.search(title):
+            continue
+        if NOISE_TITLE_RE.search(title):
+            continue
+        if REQUIRE_JOB_BOARD_URL and not looks_like_job_url(link):
             continue
         if EXCLUDE_REMOTE and is_remote_text(title, summary, link):
             continue
@@ -245,6 +282,10 @@ def parse_google_proxy(proxy_template: str, query: str, fetched_at: str) -> list
         title = re.sub(r"\s+", " ", link.split("/")[-1].replace("-", " ")).strip() or "Job posting"
         if not ROLE_RE.search(f"{title} {query}"):
             continue
+        if NOISE_TITLE_RE.search(title):
+            continue
+        if REQUIRE_JOB_BOARD_URL and not looks_like_job_url(link):
+            continue
         if EXCLUDE_REMOTE and is_remote_text(title, query, link):
             continue
 
@@ -274,6 +315,9 @@ def main() -> None:
     feed_stats: dict[str, int] = {}
 
     for source_name, url in FEEDS:
+        if not ENABLE_GOOGLE_NEWS and source_name == "Google News Cyber Jobs":
+            feed_stats[source_name] = 0
+            continue
         try:
             rows = parse_feed(source_name, url, fetched_at)
             feed_stats[source_name] = len(rows)
