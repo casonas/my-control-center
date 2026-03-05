@@ -48,15 +48,19 @@ function detectRumor(title: string, summary: string | null): number {
 export async function fetchSportsNews(league: League): Promise<ProviderResult<NormalizedNews>> {
   const feeds = FEEDS[league] || [];
   if (feeds.length === 0) {
-    return { ok: true, data: [], source: "rss" };
+    return { ok: false, data: [], source: "rss", error: `No feeds configured for league: ${league}` };
   }
 
   const allItems: NormalizedNews[] = [];
+  const errors: string[] = [];
 
   for (const feed of feeds) {
     try {
       const xml = await fetchWithRetry(feed.url, { timeoutMs: 6000 });
-      if (!xml) continue;
+      if (!xml) {
+        errors.push(`${feed.source} fetch failed`);
+        continue;
+      }
 
       const items = parseFeed(xml);
       for (const item of items) {
@@ -73,8 +77,14 @@ export async function fetchSportsNews(league: League): Promise<ProviderResult<No
         });
       }
     } catch (err) {
-      console.warn(`[sports-news] Failed to fetch ${feed.source}:`, err instanceof Error ? err.message : err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[sports-news] Failed to fetch ${feed.source}:`, message);
+      errors.push(`${feed.source}: ${message}`);
     }
+  }
+
+  if (allItems.length === 0 && errors.length > 0) {
+    return { ok: false, data: [], source: "rss", error: errors.join("; ") };
   }
 
   return { ok: true, data: allItems, source: "rss" };

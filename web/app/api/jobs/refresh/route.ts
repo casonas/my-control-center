@@ -3,6 +3,7 @@ export const runtime = "edge";
 
 import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
+import { apiError, apiJson } from "@/lib/apiJson";
 import { parseFeed } from "@/lib/rss";
 import { scoreJob, detectRemoteFlag } from "@/lib/jobScoring";
 import { DEFAULT_JOB_SOURCES, buildDedupeKey, fetchWithRetry } from "@/lib/jobSources";
@@ -12,7 +13,7 @@ const REFRESH_COOLDOWN_MS = 2 * 60 * 1000;
 export async function POST(req: Request) {
   return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
-    if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
+    if (!db) return apiError("D1 not available", 500);
 
     const userId = session.user_id;
     const start = Date.now();
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
         const elapsed = Date.now() - new Date(lastRun.last_run_at).getTime();
         if (elapsed < REFRESH_COOLDOWN_MS) {
           const waitSec = Math.ceil((REFRESH_COOLDOWN_MS - elapsed) / 1000);
-          return Response.json({ ok: false, error: `Please wait ${waitSec}s before refreshing again` }, { status: 429 });
+          return apiError(`Please wait ${waitSec}s before refreshing again`, 429);
         }
       }
 
@@ -148,8 +149,18 @@ export async function POST(req: Request) {
           failedSources > 0 ? `${failedSources} source(s) failed` : null)
         .run();
 
-      return Response.json({
+      const sourceHealth = [
+        {
+          name: "job-rss-sources",
+          status: failedSources > 0 ? (inserted > 0 ? "partial" : "error") : "ok",
+          latencyMs: Date.now() - start,
+          error: failedSources > 0 ? `${failedSources} source(s) failed` : undefined,
+        },
+      ];
+
+      return apiJson({
         ok: true,
+        status: cronStatus === "success" ? "ok" : "partial",
         fetched,
         inserted,
         deduped,
@@ -158,6 +169,8 @@ export async function POST(req: Request) {
         sources: sources.length,
         tookMs,
         newJobs: inserted,
+        sourceHealth,
+        staleFallbackUsed: false,
       });
     } catch (err) {
       return d1ErrorResponse("POST /api/jobs/refresh", err);

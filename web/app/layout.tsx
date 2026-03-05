@@ -26,7 +26,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased h-screen overflow-hidden">
+      <body className="antialiased h-screen h-[100dvh] overflow-hidden">
         {children}
         <script
           dangerouslySetInnerHTML={{

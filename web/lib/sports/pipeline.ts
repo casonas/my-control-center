@@ -5,9 +5,7 @@
 
 import type { D1Database } from "@/lib/d1";
 import type { League, NormalizedGame, NormalizedOdds, NormalizedNews } from "./types";
-import { fetchEspnScores } from "./espn";
-import { fetchOdds } from "./odds";
-import { fetchSportsNews } from "./news";
+import { getSportsProviders } from "./providers";
 import { analyzeEdges } from "./analyst";
 
 interface PipelineResult {
@@ -15,9 +13,16 @@ interface PipelineResult {
   odds: number;
   news: number;
   predictions: number;
+  status: "ok" | "partial" | "error";
   errors: string[];
-  source: string;
-  sourceHealth: Record<string, { ok: boolean; items: number; error?: string }>;
+  sourceHealth: Array<{
+    name: string;
+    status: "ok" | "error";
+    latencyMs: number;
+    items: number;
+    error?: string;
+  }>;
+  staleFallbackUsed: boolean;
 }
 
 /**
@@ -110,16 +115,17 @@ async function upsertNews(db: D1Database, userId: string, news: NormalizedNews[]
   for (const n of news) {
     try {
       const id = `news_${n.dedupe_key}`;
-      await db.prepare(
+      const result = await db.prepare(
         `INSERT OR IGNORE INTO sports_news_items (id, user_id, league, team_id, title, source, url, published_at, fetched_at, dedupe_key)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         id, userId, n.league, n.team_id, n.title, n.source, n.url,
         n.published_at, new Date().toISOString(), n.dedupe_key
       ).run();
-      count++;
+      const changes = Number((result.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+      if (changes > 0) count++;
     } catch {
-      // duplicate dedupe_key — expected
+      // duplicate dedupe_key - expected
     }
   }
   return count;
@@ -196,53 +202,99 @@ export async function runSportsRefresh(
   league: League
 ): Promise<PipelineResult> {
   const errors: string[] = [];
-  const sourceHealth: Record<string, { ok: boolean; items: number; error?: string }> = {};
+  const sourceHealth: PipelineResult["sourceHealth"] = [];
+  let staleFallbackUsed = false;
   let gameCount = 0;
   let oddsCount = 0;
   let newsCount = 0;
   let predCount = 0;
+  const providers = getSportsProviders();
 
   // 1. Scores
-  const scoresResult = await fetchEspnScores(league);
+  const scoresStart = Date.now();
+  const scoresResult = await providers.fetchScores(league);
   if (scoresResult.ok) {
     gameCount = await upsertGames(db, userId, scoresResult.data);
-    sourceHealth.espn = { ok: true, items: gameCount };
+    sourceHealth.push({ name: "espn/scores", status: "ok", latencyMs: Date.now() - scoresStart, items: gameCount });
   } else {
     errors.push(`Scores: ${scoresResult.error}`);
-    sourceHealth.espn = { ok: false, items: 0, error: scoresResult.error };
+    const cached = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM sports_games WHERE user_id = ? AND league = ?`
+    ).bind(userId, league).first<{ cnt: number }>().catch(() => null);
+    gameCount = cached?.cnt ?? 0;
+    staleFallbackUsed = staleFallbackUsed || gameCount > 0;
+    sourceHealth.push({
+      name: "espn/scores",
+      status: "error",
+      latencyMs: Date.now() - scoresStart,
+      items: gameCount,
+      error: scoresResult.error,
+    });
   }
 
   // 2. Odds
-  const oddsResult = await fetchOdds(league);
+  const oddsStart = Date.now();
+  const oddsResult = await providers.fetchOdds(league);
+  const oddsSourceName = oddsResult.source || "odds";
   if (oddsResult.ok) {
     oddsCount = await upsertOdds(db, userId, oddsResult.data);
-    sourceHealth["the-odds-api"] = { ok: true, items: oddsCount };
+    sourceHealth.push({ name: oddsSourceName, status: "ok", latencyMs: Date.now() - oddsStart, items: oddsCount });
   } else {
     errors.push(`Odds: ${oddsResult.error}`);
-    sourceHealth["the-odds-api"] = { ok: false, items: 0, error: oddsResult.error };
+    const cached = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM sports_odds_market WHERE user_id = ? AND game_id LIKE ?`
+    ).bind(userId, `espn_${league}_%`).first<{ cnt: number }>().catch(() => null);
+    oddsCount = cached?.cnt ?? 0;
+    staleFallbackUsed = staleFallbackUsed || oddsCount > 0;
+    sourceHealth.push({
+      name: oddsSourceName,
+      status: "error",
+      latencyMs: Date.now() - oddsStart,
+      items: oddsCount,
+      error: oddsResult.error,
+    });
   }
 
   // 3. News
-  const newsResult = await fetchSportsNews(league);
+  const newsStart = Date.now();
+  const newsResult = await providers.fetchNews(league);
   if (newsResult.ok) {
     newsCount = await upsertNews(db, userId, newsResult.data);
-    sourceHealth.rss = { ok: true, items: newsCount };
+    sourceHealth.push({ name: "sports/rss", status: "ok", latencyMs: Date.now() - newsStart, items: newsCount });
   } else {
     errors.push(`News: ${newsResult.error}`);
-    sourceHealth.rss = { ok: false, items: 0, error: newsResult.error };
+    const cached = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM sports_news_items WHERE user_id = ? AND league = ?`
+    ).bind(userId, league).first<{ cnt: number }>().catch(() => null);
+    newsCount = cached?.cnt ?? 0;
+    staleFallbackUsed = staleFallbackUsed || newsCount > 0;
+    sourceHealth.push({
+      name: "sports/rss",
+      status: "error",
+      latencyMs: Date.now() - newsStart,
+      items: newsCount,
+      error: newsResult.error,
+    });
   }
 
   // 4. Analyst (runs after scores + odds are updated)
   predCount = await runAnalyst(db, userId, league);
-  sourceHealth.analyst = { ok: true, items: predCount };
+  sourceHealth.push({ name: "sports/analyst", status: "ok", latencyMs: 0, items: predCount });
+
+  const status = sourceHealth.every((s) => s.status === "ok")
+    ? "ok"
+    : sourceHealth.some((s) => s.status === "ok")
+      ? "partial"
+      : "error";
 
   return {
     games: gameCount,
     odds: oddsCount,
     news: newsCount,
     predictions: predCount,
+    status,
     errors,
-    source: "espn+odds-api+rss",
     sourceHealth,
+    staleFallbackUsed,
   };
 }

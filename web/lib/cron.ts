@@ -7,6 +7,7 @@
 
 import type { D1Database } from "./d1";
 import { parseFeed, inferTags, DEFAULT_SOURCES } from "./rss";
+import { upsertCronRun } from "./cronLog";
 
 // ─── Schedule definitions (matches 5 worker cron triggers) ───
 export const CRON_SCHEDULES: Record<string, { cron: string; description: string }> = {
@@ -31,14 +32,13 @@ export async function updateCronRun(
   jobName: string,
   result: { status: "ok" | "error" | "partial"; itemsProcessed: number; tookMs: number; error?: string | null }
 ) {
-  const now = new Date().toISOString();
-  await db
-    .prepare(
-      `INSERT OR REPLACE INTO cron_runs (job_name, last_run_at, status, items_processed, took_ms, error, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(jobName, now, result.status, result.itemsProcessed, result.tookMs, result.error ?? null, now)
-    .run();
+  await upsertCronRun(db, {
+    jobName,
+    status: result.status,
+    itemsProcessed: result.itemsProcessed,
+    tookMs: result.tookMs,
+    error: result.error ?? null,
+  });
 }
 
 // ─── Job runners ─────────────────────────────────────

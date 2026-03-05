@@ -1,4 +1,4 @@
-// web/lib/internalAuth.ts — Validates X-Internal-Token header for VPS/runner endpoints
+// web/lib/internalAuth.ts - shared internal auth for cron/VPS endpoints
 
 export const INTERNAL_DEFAULT_USER_ID = "owner";
 
@@ -12,6 +12,10 @@ export function getInternalUserId(req: Request): string {
   return process.env.INTERNAL_DEFAULT_USER_ID || INTERNAL_DEFAULT_USER_ID;
 }
 
+export function hasInternalAuthHeaders(req: Request): boolean {
+  return !!(req.headers.get("X-Internal-Token") || req.headers.get("X-Internal-User-Id"));
+}
+
 export function isInternalRequest(req: Request): boolean {
   const secret = getInternalSecret();
   if (!secret) return false;
@@ -20,19 +24,23 @@ export function isInternalRequest(req: Request): boolean {
 }
 
 export function requireInternalAuth(req: Request): void {
-  const secret = 
-    getInternalSecret();
+  const secret = getInternalSecret();
   if (!secret) {
-    throw new InternalAuthError("INTERNAL_SHARED_SECRET/CRON_SECRET not configured");
+    throw new InternalAuthError("INTERNAL_SHARED_SECRET/CRON_SECRET not configured", 500);
   }
   const token = req.headers.get("X-Internal-Token");
   if (!token || token !== secret) {
-    throw new InternalAuthError("Invalid or missing X-Internal-Token");
+    throw new InternalAuthError("Invalid or missing X-Internal-Token", 401);
   }
 }
 
 export class InternalAuthError extends Error {
-  status = 401;
+  status: number;
+
+  constructor(message: string, status = 401) {
+    super(message);
+    this.status = status;
+  }
 }
 
 export function withInternalAuth(
@@ -45,7 +53,7 @@ export function withInternalAuth(
   } catch (e) {
     if (e instanceof InternalAuthError) {
       return Promise.resolve(
-        Response.json({ ok: false, error: e.message, where: "internalAuth" }, { status: 401 })
+        Response.json({ ok: false, error: e.message, where: "internalAuth" }, { status: e.status })
       );
     }
     return Promise.resolve(

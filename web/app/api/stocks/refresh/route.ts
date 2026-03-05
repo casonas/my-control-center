@@ -1,6 +1,8 @@
 export const runtime = "edge";
 import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
+import { apiError, apiJson } from "@/lib/apiJson";
+import { upsertCronRun } from "@/lib/cronLog";
 import {
   getStockIntelProvider, storeQuotes, storeIndices, storeRegimeSnapshot,
   loadCachedQuotes, loadCachedIndices, buildFreshness,
@@ -15,7 +17,7 @@ const RISK_ON_THRESHOLD = 1;
 export async function POST(req: Request) {
   return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
-    if (!db) return Response.json({ ok: false, error: "D1 not available" }, { status: 500 });
+    if (!db) return apiError("D1 not available", 500);
     const userId = session.user_id;
     const start = Date.now();
 
@@ -27,7 +29,7 @@ export async function POST(req: Request) {
       if (lastRun?.last_run_at) {
         const elapsed = Date.now() - new Date(lastRun.last_run_at).getTime();
         if (elapsed < COOLDOWN_MS)
-          return Response.json({ ok: false, error: `Wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s` }, { status: 429 });
+          return apiError(`Wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s`, 429);
       }
 
       // ── watchlist ───────────────────────────────────
@@ -109,17 +111,17 @@ export async function POST(req: Request) {
         .filter((s) => s.status !== "ok" && s.error)
         .map((s) => `${s.name}: ${s.error}`);
 
-      await db.prepare(
-        `INSERT OR REPLACE INTO cron_runs
-         (job_name, last_run_at, status, items_processed, took_ms, error, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        `stocks_refresh_${userId}`, now, overallStatus,
-        quotesStored + indicesStored, Date.now() - start,
-        errorMessages.length > 0 ? errorMessages.join("; ") : null, now,
-      ).run();
+      await upsertCronRun(db, {
+        jobName: `stocks_refresh_${userId}`,
+        lastRunAt: now,
+        status: overallStatus,
+        itemsProcessed: quotesStored + indicesStored,
+        tookMs: Date.now() - start,
+        error: errorMessages.length > 0 ? errorMessages.join("; ") : null,
+        updatedAt: now,
+      });
 
-      return Response.json({
+      return apiJson({
         ok: true,
         status: overallStatus,
         quotesStored,

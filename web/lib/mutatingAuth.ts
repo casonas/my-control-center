@@ -4,7 +4,12 @@
 // Node.js VPS (npm start).  No D1 or getRequestContext() required.
 //
 import { getSession } from "@/lib/auth";
-import { getInternalUserId, isInternalRequest } from "@/lib/internalAuth";
+import {
+  getInternalUserId,
+  hasInternalAuthHeaders,
+  requireInternalAuth,
+  InternalAuthError,
+} from "@/lib/internalAuth";
 
 export type SessionRow = {
   id: string;
@@ -26,7 +31,7 @@ class HttpError extends Error {
 }
 
 function jsonError(status: number, message: string) {
-  return Response.json({ error: message }, { status });
+  return Response.json({ ok: false, error: message }, { status });
 }
 
 function normalizeOrigin(origin: string) {
@@ -76,7 +81,8 @@ function requireOriginAllowed(req: Request) {
  * Uses stateless signed cookies — no database required.
  */
 export async function requireMutatingAuth(req: Request): Promise<{ session: SessionRow }> {
-  if (isInternalRequest(req)) {
+  if (hasInternalAuthHeaders(req)) {
+    requireInternalAuth(req);
     const userId = getInternalUserId(req);
     return {
       session: {
@@ -117,6 +123,7 @@ export async function withMutatingAuth(
     const ctx = await requireMutatingAuth(req);
     return await handler(ctx);
   } catch (e: unknown) {
+    if (e instanceof InternalAuthError) return jsonError(e.status, e.message);
     if (e instanceof HttpError) return jsonError(e.status, e.message);
     console.error("withMutatingAuth unexpected error:", e);
     return jsonError(500, "Internal error");

@@ -10,6 +10,7 @@
 //   • every response carries: sourceHealth[], freshness { asof, ageSeconds, stale }
 
 import type { D1Database } from "./d1";
+import { httpRequest } from "./http";
 
 /* ================================================================
    Public types — consumed by routes, UI, cron
@@ -48,6 +49,9 @@ export interface Freshness {
 
 /** 10 min — beyond this any cached row is flagged stale */
 const STALE_THRESHOLD_SEC = 600;
+const DEFAULT_PROVIDER_SYMBOL_CAP = 40;
+const DEFAULT_PROVIDER_ORDER = ["yahoo", "polygon", "finnhub", "twelvedata", "stock-intel"] as const;
+type ProviderName = (typeof DEFAULT_PROVIDER_ORDER)[number];
 
 /* ================================================================
    Env helper
@@ -92,27 +96,53 @@ async function fetchWithRetry(
   opts: { method?: string; body?: string; headers?: Record<string, string> } = {},
 ): Promise<Response> {
   const { method = "GET", body, headers = {} } = opts;
-  let lastError: unknown;
+  return httpRequest(url, {
+    method,
+    body,
+    headers,
+    timeoutMs: TIMEOUT_MS,
+    retries: MAX_RETRIES,
+    retryDelayMs: 700,
+    userAgent: "MCC-Stocks/2.0",
+  });
+}
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { "User-Agent": "MCC-Stocks/2.0", ...headers },
-        ...(body ? { body } : {}),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res;
-    } catch (err) {
-      lastError = err;
-      if (attempt < MAX_RETRIES) {
-        const jitter = 500 + Math.random() * 1000;          // 500-1500 ms
-        await new Promise((r) => setTimeout(r, jitter));
-      }
-    }
+function getProviderSymbolCap(): number {
+  const n = Number(process.env.STOCK_PROVIDER_SYMBOL_CAP ?? DEFAULT_PROVIDER_SYMBOL_CAP);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_PROVIDER_SYMBOL_CAP;
+}
+
+function getProviderOrder(): ProviderName[] {
+  const raw = process.env.STOCK_PROVIDER_ORDER;
+  const parsed = (raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) as ProviderName[];
+  const list = parsed.length > 0 ? parsed : [...DEFAULT_PROVIDER_ORDER];
+  const unique = Array.from(new Set(list)).filter((p) => (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(p));
+  return unique.length > 0 ? unique : [...DEFAULT_PROVIDER_ORDER];
+}
+
+function providerEnabled(order: ProviderName[], provider: ProviderName): boolean {
+  return order.includes(provider);
+}
+
+function getApiKeys(...candidates: Array<string | undefined>): string[] {
+  for (const c of candidates) {
+    if (!c) continue;
+    const keys = c.split(",").map((s) => s.trim()).filter(Boolean);
+    if (keys.length > 0) return keys;
   }
-  throw lastError;
+  return [];
+}
+
+function pickApiKey(keys: string[], slot: number): string | null {
+  if (keys.length === 0) return null;
+  return keys[slot % keys.length] ?? keys[0] ?? null;
+}
+
+function unresolvedTickers(tickers: string[], seen: Set<string>, cap: number): string[] {
+  return tickers
+    .map((t) => t.toUpperCase())
+    .filter((t) => t && !seen.has(t))
+    .slice(0, cap);
 }
 
 /** Build a SourceHealth for a failed call */
@@ -219,11 +249,18 @@ export class StockIntelProvider {
   async fetchQuotes(tickers: string[]): Promise<{ quotes: QuoteData[]; health: SourceHealth }> {
     const t = Date.now();
     const tickerSet = new Set(tickers.map((s) => s.toUpperCase()));
+    const providerOrder = getProviderOrder();
+    const symbolCap = getProviderSymbolCap();
     const quotes: QuoteData[] = [];
     const seen = new Set<string>();
     let yahooError: string | undefined;
+    let sparkError: string | undefined;
+    let polygonError: string | undefined;
+    let finnhubError: string | undefined;
+    let twelveDataError: string | undefined;
 
     // 1) Try Yahoo Finance first (primary — works in Cloudflare runtime)
+    if (providerEnabled(providerOrder, "yahoo")) {
     try {
       const symbols = tickers.join(",");
       const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
@@ -261,9 +298,142 @@ export class StockIntelProvider {
     } catch (err) {
       yahooError = `Yahoo fetch failed: ${err instanceof Error ? err.message : String(err)}`;
     }
+    }
+
+    // 1b) Yahoo Spark fallback (works when v7 quote endpoint is blocked)
+    if (providerEnabled(providerOrder, "yahoo") && tickers.length > 0 && tickers.some((tk) => !seen.has(tk.toUpperCase()))) {
+      try {
+        const symbols = tickers.join(",");
+        const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(symbols)}&range=1d&interval=5m`;
+        const res = await fetchWithRetry(sparkUrl);
+        const body = await res.json() as { spark?: { result?: Array<Record<string, unknown>> } };
+        const sparkRows = body.spark?.result ?? [];
+        for (const row of sparkRows) {
+          const sym = String(row.symbol ?? "").toUpperCase();
+          if (!sym || seen.has(sym)) continue;
+          const response = Array.isArray(row.response) ? row.response[0] as Record<string, unknown> | undefined : undefined;
+          const meta = response && typeof response.meta === "object" && response.meta !== null
+            ? response.meta as Record<string, unknown>
+            : null;
+          const indicators = response && typeof response.indicators === "object" && response.indicators !== null
+            ? response.indicators as Record<string, unknown>
+            : null;
+          const quoteRows = indicators && Array.isArray(indicators.quote) ? indicators.quote as Array<Record<string, unknown>> : [];
+          const quote = quoteRows[0];
+
+          const price = Number(meta?.regularMarketPrice ?? lastNumber(quote?.close) ?? 0);
+          const prev = Number(meta?.regularMarketPreviousClose ?? meta?.previousClose ?? null);
+          if (!Number.isFinite(price) || price <= 0) continue;
+          const changePct = Number.isFinite(prev) && prev > 0 ? ((price - prev) / prev) * 100 : 0;
+
+          seen.add(sym);
+          quotes.push({
+            ticker: sym,
+            price,
+            change_pct: changePct,
+            volume: lastNumber(quote?.volume),
+            premarket_price: null,
+            premarket_change_pct: null,
+            source: "yahoo-spark",
+          });
+        }
+      } catch (err) {
+        sparkError = `Yahoo spark fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    // 1c) Massive/Polygon fallback (optional)
+    if (providerEnabled(providerOrder, "polygon") && tickers.length > 0 && tickers.some((tk) => !seen.has(tk.toUpperCase()))) {
+      const polygonKeys = getApiKeys(process.env.MASSIVE_API_KEYS, process.env.POLYGON_API_KEYS, process.env.MASSIVE_API_KEY, process.env.POLYGON_API_KEY);
+      if (polygonKeys.length > 0) {
+        try {
+          const unresolved = unresolvedTickers(tickers, seen, symbolCap);
+          let slot = 0;
+          for (const sym of unresolved) {
+            if (seen.has(sym)) continue;
+            const key = pickApiKey(polygonKeys, slot++);
+            if (!key) continue;
+            const q = await fetchPolygonPrev(sym, key);
+            if (!q) continue;
+            seen.add(sym);
+            quotes.push({
+              ticker: sym,
+              price: q.price,
+              change_pct: q.changePct,
+              volume: q.volume,
+              premarket_price: null,
+              premarket_change_pct: null,
+              source: "polygon",
+            });
+          }
+        } catch (err) {
+          polygonError = `Polygon fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    // 1d) Finnhub fallback (optional, no browser session required)
+    if (providerEnabled(providerOrder, "finnhub") && tickers.length > 0 && tickers.some((tk) => !seen.has(tk.toUpperCase()))) {
+      const finnhubKeys = getApiKeys(process.env.FINNHUB_API_KEYS, process.env.FINNHUB_API_KEY);
+      if (finnhubKeys.length > 0) {
+        try {
+          const unresolved = unresolvedTickers(tickers, seen, symbolCap);
+          let slot = 0;
+          for (const sym of unresolved) {
+            if (seen.has(sym)) continue;
+            const key = pickApiKey(finnhubKeys, slot++);
+            if (!key) continue;
+            const q = await fetchFinnhubQuote(sym, key);
+            if (!q) continue;
+            seen.add(sym);
+            quotes.push({
+              ticker: sym,
+              price: q.price,
+              change_pct: q.changePct,
+              volume: null,
+              premarket_price: null,
+              premarket_change_pct: null,
+              source: "finnhub",
+            });
+          }
+        } catch (err) {
+          finnhubError = `Finnhub fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    // 1e) TwelveData fallback (optional)
+    if (providerEnabled(providerOrder, "twelvedata") && tickers.length > 0 && tickers.some((tk) => !seen.has(tk.toUpperCase()))) {
+      const twelveDataKeys = getApiKeys(process.env.TWELVEDATA_API_KEYS, process.env.TWELVEDATA_API_KEY);
+      if (twelveDataKeys.length > 0) {
+        try {
+          const unresolved = unresolvedTickers(tickers, seen, symbolCap);
+          let slot = 0;
+          for (const sym of unresolved) {
+            if (seen.has(sym)) continue;
+            const key = pickApiKey(twelveDataKeys, slot++);
+            if (!key) continue;
+            const q = await fetchTwelveDataQuote(sym, key);
+            if (!q) continue;
+            seen.add(sym);
+            quotes.push({
+              ticker: sym,
+              price: q.price,
+              change_pct: q.changePct,
+              volume: q.volume,
+              premarket_price: null,
+              premarket_change_pct: null,
+              source: "twelvedata",
+            });
+          }
+        } catch (err) {
+          twelveDataError = `TwelveData fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
 
     // 2) Fallback to Stock Intel (only if configured)
-    if (this.available) {
+    if (providerEnabled(providerOrder, "stock-intel") && this.available) {
     try {
       const res = await fetchWithRetry(`${this.base}/alerts/watchlist`);
       const body = await res.json() as unknown;
@@ -294,22 +464,46 @@ export class StockIntelProvider {
     } // end if (this.available)
 
     // Determine actual source label — don't say "stock-intel" if only yahoo was used
-    const hasYahoo = quotes.some((q) => q.source === "yahoo");
+    const hasYahoo = quotes.some((q) => q.source.startsWith("yahoo"));
+    const hasPolygon = quotes.some((q) => q.source === "polygon");
+    const hasFinnhub = quotes.some((q) => q.source === "finnhub");
+    const hasTwelveData = quotes.some((q) => q.source === "twelvedata");
     const hasIntel = quotes.some((q) => q.source === "stock-intel");
-    const sourceName = hasYahoo && hasIntel ? "yahoo+stock-intel" : hasYahoo ? "yahoo" : hasIntel ? "stock-intel" : "none";
+    const sourceName = hasYahoo && hasIntel
+      ? "yahoo+stock-intel"
+      : hasYahoo
+        ? "yahoo"
+        : hasPolygon
+          ? "polygon"
+        : hasFinnhub
+          ? "finnhub"
+        : hasTwelveData
+          ? "twelvedata"
+          : hasIntel
+            ? "stock-intel"
+            : "none";
     const status = quotes.length > 0 ? "ok" : "error";
-    const errorMsg = status === "error" ? (yahooError || "All sources returned 0 quotes") : undefined;
+    const errorMsg = status === "error"
+      ? [yahooError, sparkError, polygonError, finnhubError, twelveDataError, "All sources returned 0 quotes"].filter(Boolean).join("; ")
+      : undefined;
     return { quotes, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
   /* ── indices: Yahoo Finance first, Stock Intel fallback ────── */
   async fetchIndices(): Promise<{ indices: IndexData[]; health: SourceHealth }> {
     const t = Date.now();
+    const providerOrder = getProviderOrder();
     const indices: IndexData[] = [];
     const yahooSymbols = "^GSPC,^IXIC,BTC-USD";
+    const symbolCap = getProviderSymbolCap();
     let yahooError: string | undefined;
+    let chartError: string | undefined;
+    let polygonError: string | undefined;
+    let finnhubError: string | undefined;
+    let twelveDataError: string | undefined;
 
     // 1) Try Yahoo Finance for ^GSPC, ^IXIC, BTC-USD
+    if (providerEnabled(providerOrder, "yahoo")) {
     try {
       const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSymbols)}`;
       const res = await fetchWithRetry(yahooUrl);
@@ -342,9 +536,128 @@ export class StockIntelProvider {
     } catch (err) {
       yahooError = `Yahoo indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
     }
+    }
+
+    // 1b) Yahoo chart fallback for indices
+    if (providerEnabled(providerOrder, "yahoo") && indices.length === 0) {
+      try {
+        const symbolMap: Array<{ raw: string; mapped: string }> = [
+          { raw: "^GSPC", mapped: "SPX" },
+          { raw: "^IXIC", mapped: "IXIC" },
+          { raw: "BTC-USD", mapped: "BTC" },
+        ];
+        for (const { raw, mapped } of symbolMap) {
+          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(raw)}?range=1d&interval=5m`;
+          const res = await fetchWithRetry(chartUrl);
+          const body = await res.json() as { chart?: { result?: Array<Record<string, unknown>> } };
+          const row = body.chart?.result?.[0];
+          if (!row || typeof row !== "object") continue;
+          const meta = typeof row.meta === "object" && row.meta !== null ? row.meta as Record<string, unknown> : null;
+          const price = Number(meta?.regularMarketPrice ?? 0);
+          const prev = Number(meta?.chartPreviousClose ?? meta?.previousClose ?? null);
+          if (!Number.isFinite(price) || price <= 0) continue;
+          const changePct = Number.isFinite(prev) && prev > 0 ? ((price - prev) / prev) * 100 : 0;
+          indices.push({
+            symbol: mapped,
+            value: price,
+            change_pct: changePct,
+            source: "yahoo-chart",
+          });
+        }
+      } catch (err) {
+        chartError = `Yahoo chart indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    // 1c) Massive/Polygon fallback with liquid proxies (SPY->SPX, QQQ->IXIC, X:BTCUSD->BTC)
+    if (providerEnabled(providerOrder, "polygon") && indices.length === 0) {
+      const polygonKeys = getApiKeys(process.env.MASSIVE_API_KEYS, process.env.POLYGON_API_KEYS, process.env.MASSIVE_API_KEY, process.env.POLYGON_API_KEY);
+      if (polygonKeys.length > 0) {
+        try {
+          const proxies: Array<{ sourceSymbol: string; target: "SPX" | "IXIC" | "BTC" }> = [
+            { sourceSymbol: "SPY", target: "SPX" },
+            { sourceSymbol: "QQQ", target: "IXIC" },
+            { sourceSymbol: "X:BTCUSD", target: "BTC" },
+          ];
+          let slot = 0;
+          for (const p of proxies.slice(0, Math.max(1, symbolCap))) {
+            const key = pickApiKey(polygonKeys, slot++);
+            if (!key) continue;
+            const q = await fetchPolygonPrev(p.sourceSymbol, key);
+            if (!q) continue;
+            indices.push({
+              symbol: p.target,
+              value: q.price,
+              change_pct: q.changePct,
+              source: "polygon",
+            });
+          }
+        } catch (err) {
+          polygonError = `Polygon indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    // 1d) Finnhub fallback with liquid proxies (SPY->SPX, QQQ->IXIC, BINANCE:BTCUSDT->BTC)
+    if (providerEnabled(providerOrder, "finnhub") && indices.length === 0) {
+      const finnhubKeys = getApiKeys(process.env.FINNHUB_API_KEYS, process.env.FINNHUB_API_KEY);
+      if (finnhubKeys.length > 0) {
+        try {
+          const proxies: Array<{ sourceSymbol: string; target: "SPX" | "IXIC" | "BTC" }> = [
+            { sourceSymbol: "SPY", target: "SPX" },
+            { sourceSymbol: "QQQ", target: "IXIC" },
+            { sourceSymbol: "BINANCE:BTCUSDT", target: "BTC" },
+          ];
+          let slot = 0;
+          for (const p of proxies.slice(0, Math.max(1, symbolCap))) {
+            const key = pickApiKey(finnhubKeys, slot++);
+            if (!key) continue;
+            const q = await fetchFinnhubQuote(p.sourceSymbol, key);
+            if (!q) continue;
+            indices.push({
+              symbol: p.target,
+              value: q.price,
+              change_pct: q.changePct,
+              source: "finnhub",
+            });
+          }
+        } catch (err) {
+          finnhubError = `Finnhub indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+
+    // 1e) TwelveData fallback with liquid proxies (SPY->SPX, QQQ->IXIC, BTC/USD->BTC)
+    if (providerEnabled(providerOrder, "twelvedata") && indices.length === 0) {
+      const twelveDataKeys = getApiKeys(process.env.TWELVEDATA_API_KEYS, process.env.TWELVEDATA_API_KEY);
+      if (twelveDataKeys.length > 0) {
+        try {
+          const proxies: Array<{ sourceSymbol: string; target: "SPX" | "IXIC" | "BTC" }> = [
+            { sourceSymbol: "SPY", target: "SPX" },
+            { sourceSymbol: "QQQ", target: "IXIC" },
+            { sourceSymbol: "BTC/USD", target: "BTC" },
+          ];
+          let slot = 0;
+          for (const p of proxies.slice(0, Math.max(1, symbolCap))) {
+            const key = pickApiKey(twelveDataKeys, slot++);
+            if (!key) continue;
+            const q = await fetchTwelveDataQuote(p.sourceSymbol, key);
+            if (!q) continue;
+            indices.push({
+              symbol: p.target,
+              value: q.price,
+              change_pct: q.changePct,
+              source: "twelvedata",
+            });
+          }
+        } catch (err) {
+          twelveDataError = `TwelveData indices fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
 
     // 2) Fallback to Stock Intel summaries (only if configured)
-    if (this.available) {
+    if (providerEnabled(providerOrder, "stock-intel") && this.available) {
     try {
       const res = await fetchWithRetry(`${this.base}/summaries/daily`);
       const body = await res.json() as unknown;
@@ -363,8 +676,20 @@ export class StockIntelProvider {
     } // end if (this.available)
 
     const status = indices.length > 0 ? "ok" : "error";
-    const sourceName = indices.some((i) => i.source === "yahoo") ? "yahoo/indices" : indices.length > 0 ? `${this.name}/summaries` : "none/indices";
-    const errorMsg = status === "error" ? (yahooError || `All index sources returned empty (requested: ${yahooSymbols})`) : undefined;
+    const sourceName = indices.some((i) => i.source.startsWith("yahoo"))
+      ? "yahoo/indices"
+      : indices.some((i) => i.source === "polygon")
+        ? "polygon/indices"
+      : indices.some((i) => i.source === "finnhub")
+        ? "finnhub/indices"
+      : indices.some((i) => i.source === "twelvedata")
+        ? "twelvedata/indices"
+        : indices.length > 0
+          ? `${this.name}/summaries`
+          : "none/indices";
+    const errorMsg = status === "error"
+      ? [yahooError, chartError, polygonError, finnhubError, twelveDataError, `All index sources returned empty (requested: ${yahooSymbols})`].filter(Boolean).join("; ")
+      : undefined;
     return { indices, health: { name: sourceName, status, latencyMs: Date.now() - t, ...(errorMsg ? { error: errorMsg } : {}) } };
   }
 
@@ -793,7 +1118,7 @@ export async function scanNewsFeeds(
             const pubAt = String(item.published_at || item.date || "");
             const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, "stock-intel", pubAt);
             try {
-              await db.prepare(
+              const insertResult = await db.prepare(
                 `INSERT OR IGNORE INTO stock_news_items
                  (id, user_id, ticker, title, source, url, published_at, fetched_at, summary, impact_score, dedupe_key, sentiment_score, catalyst_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -801,7 +1126,8 @@ export async function scanNewsFeeds(
                 crypto.randomUUID(), userId, ticker, title, "stock-intel", url,
                 pubAt, now, summary, rel.impactScore, dedupeKey, sentiment, catalyst,
               ).run();
-              newItems++;
+              const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+              if (changes > 0) newItems++;
             } catch { /* dedupe */ }
           }
         } catch { /* per-ticker non-fatal */ }
@@ -831,7 +1157,7 @@ export async function scanNewsFeeds(
         const ticker = extracted.length > 0 ? extracted[0] : null;
         const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, feed.name, item.publishedAt);
         try {
-          await db.prepare(
+          const insertResult = await db.prepare(
             `INSERT OR IGNORE INTO stock_news_items
              (id, user_id, ticker, title, source, url, published_at, fetched_at, summary, impact_score, dedupe_key, sentiment_score, catalyst_type)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -839,7 +1165,8 @@ export async function scanNewsFeeds(
             crypto.randomUUID(), userId, ticker, title, feed.name, item.url,
             item.publishedAt, now, summary, rel.impactScore, dedupeKey, sentiment, catalyst,
           ).run();
-          newItems++;
+          const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
+          if (changes > 0) newItems++;
         } catch { /* dedupe */ }
       }
       sources.push({ name: feed.name, status: "ok", latencyMs: Date.now() - start });
@@ -856,7 +1183,10 @@ export async function scanNewsFeeds(
    ================================================================ */
 
 export function getStockIntelProvider(): StockIntelProvider {
-  return new StockIntelProvider();
+  if (!(globalThis as { __mccStockProvider?: StockIntelProvider }).__mccStockProvider) {
+    (globalThis as { __mccStockProvider?: StockIntelProvider }).__mccStockProvider = new StockIntelProvider();
+  }
+  return (globalThis as { __mccStockProvider?: StockIntelProvider }).__mccStockProvider as StockIntelProvider;
 }
 
 /* ================================================================
@@ -903,5 +1233,73 @@ function mapQuote(r: Record<string, unknown>, sym: string): QuoteData {
     premarket_price: r.premarket_price != null ? Number(r.premarket_price) : null,
     premarket_change_pct: r.premarket_change_pct != null ? Number(r.premarket_change_pct) : null,
     source: "stock-intel",
+  };
+}
+
+function lastNumber(v: unknown): number | null {
+  if (!Array.isArray(v)) return null;
+  for (let i = v.length - 1; i >= 0; i--) {
+    const n = Number(v[i]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+async function fetchFinnhubQuote(
+  symbol: string,
+  token: string,
+): Promise<{ price: number; changePct: number } | null> {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(token)}`;
+  const res = await fetchWithRetry(url);
+  const json = await res.json() as Record<string, unknown>;
+  const price = Number(json.c ?? 0);
+  const changePct = Number(json.dp ?? 0);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return {
+    price,
+    changePct: Number.isFinite(changePct) ? changePct : 0,
+  };
+}
+
+async function fetchPolygonPrev(
+  symbol: string,
+  apiKey: string,
+): Promise<{ price: number; changePct: number; volume: number | null } | null> {
+  const url = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(symbol)}/prev?adjusted=true&apiKey=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWithRetry(url);
+  const json = await res.json() as {
+    results?: Array<{ c?: number; o?: number; v?: number }>;
+  };
+  const row = json.results?.[0];
+  const close = Number(row?.c ?? 0);
+  const open = Number(row?.o ?? 0);
+  if (!Number.isFinite(close) || close <= 0) return null;
+  const changePct = Number.isFinite(open) && open > 0 ? ((close - open) / open) * 100 : 0;
+  return {
+    price: close,
+    changePct,
+    volume: Number.isFinite(Number(row?.v)) ? Number(row?.v) : null,
+  };
+}
+
+async function fetchTwelveDataQuote(
+  symbol: string,
+  apiKey: string,
+): Promise<{ price: number; changePct: number; volume: number | null } | null> {
+  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWithRetry(url);
+  const json = await res.json() as Record<string, unknown>;
+  if (json.code != null || json.status === "error") return null;
+
+  const close = Number(json.close ?? 0);
+  const changePctRaw = String(json.percent_change ?? "0").replace("%", "");
+  const changePct = Number(changePctRaw);
+  const volume = json.volume != null ? Number(json.volume) : null;
+
+  if (!Number.isFinite(close) || close <= 0) return null;
+  return {
+    price: close,
+    changePct: Number.isFinite(changePct) ? changePct : 0,
+    volume: Number.isFinite(Number(volume)) ? Number(volume) : null,
   };
 }

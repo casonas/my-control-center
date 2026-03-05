@@ -1363,7 +1363,7 @@ export default function Home() {
 
   // Main dashboard — full-height, no page scroll
   return (
-    <main className="h-screen flex flex-col overflow-hidden bg-[#050507] text-white" style={{ "--theme-accent": themeAccent } as React.CSSProperties}>
+    <main className="h-screen h-[100dvh] flex flex-col overflow-hidden bg-[#050507] text-white" style={{ "--theme-accent": themeAccent } as React.CSSProperties}>
       {Header()}
 
       <div className="mx-auto max-w-[1600px] flex flex-1 min-h-0 w-full">
@@ -1398,6 +1398,7 @@ export default function Home() {
           `bg-gradient-to-r ${tabMeta.gradient} text-white`,
           mobileChatOpen && "rotate-45"
         )}
+        style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
       >
         {mobileChatOpen ? "✕" : "💬"}
       </button>

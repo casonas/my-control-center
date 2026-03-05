@@ -3,6 +3,7 @@ export const runtime = "edge";
 
 import { withMutatingOrInternalAuth } from "@/lib/mutatingAuth";
 import { getD1, d1ErrorResponse } from "@/lib/d1";
+import { apiError, apiJson } from "@/lib/apiJson";
 
 async function safeCount(
   db: import("@/lib/d1").D1Database,
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
   return withMutatingOrInternalAuth(req, async ({ session }) => {
     const db = getD1();
     if (!db)
-      return Response.json({ error: "D1 not available" }, { status: 500 });
+      return apiError("D1 not available", 500);
 
     try {
       const userId = session.user_id;
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
         )
         .run();
 
-      return Response.json({
+      return apiJson({
         state: {
           due_count: dueCount,
           unread_count: unreadCount,

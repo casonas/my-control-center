@@ -86,6 +86,8 @@ function EmptyState({ icon, text }: { icon: string; text: string }) {
   );
 }
 
+const DEFAULT_OUTREACH_TEMPLATES = ["cold_email", "linkedin_connect", "follow_up", "thank_you"];
+
 function AgentStatus({ verb }: { verb: string }) {
   return (
     <div className="flex items-center gap-2 text-xs text-zinc-400 glass-light rounded-xl px-3 py-2">
@@ -908,7 +910,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
 
   // Outreach state (external API flow)
   const [outreachJob, setOutreachJob] = useState<{ title: string; company: string } | null>(null);
-  const [outreachTemplates, setOutreachTemplates] = useState<string[]>([]);
+  const [outreachTemplates, setOutreachTemplates] = useState<string[]>(DEFAULT_OUTREACH_TEMPLATES);
   const [outreachResult, setOutreachResult] = useState<{ subject?: string; body_md?: string; message?: string } | null>(null);
   const [outreachError, setOutreachError] = useState<string | null>(null);
   const [outreachLoading, setOutreachLoading] = useState(false);
@@ -985,7 +987,7 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
       if (Array.isArray(data.outreach_templates) && data.outreach_templates.length > 0) {
         setOutreachTemplates(data.outreach_templates.map((t: unknown) => String(t)));
       } else {
-        setOutreachTemplates(["cold_email", "linkedin_connect", "follow_up", "thank_you"]);
+        setOutreachTemplates(DEFAULT_OUTREACH_TEMPLATES);
       }
 
       setLastRefresh(new Date().toISOString());
@@ -1007,6 +1009,13 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
       const data = await apiGet<{ pipeline: Record<string, number> }>("/jobs/pipeline");
       if (data.pipeline) setPipeline(data.pipeline);
     } catch { /* non-fatal */ }
+    try {
+      const data = await apiGet<{ companies: WatchCompany[] }>("/companies/watch");
+      if (Array.isArray(data.companies) && data.companies.length > 0) {
+        setWatchCompanies(data.companies);
+      }
+    } catch { /* non-fatal */ }
+    setOutreachTemplates((prev) => prev.length > 0 ? prev : DEFAULT_OUTREACH_TEMPLATES);
   }, []);
 
   // ── Combined load: panel first, fallback to legacy ──
@@ -1066,6 +1075,15 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
     try {
       await apiPost("/companies/watch", { company_name: companyName, tier: "emerging", source: "manual" });
       loadJobs(statusFilter);
+    } catch { /* non-fatal */ }
+  }
+
+  async function handleLoadSeededWatchlist() {
+    try {
+      const data = await apiGet<{ companies: WatchCompany[] }>("/companies/watch");
+      if (Array.isArray(data.companies)) {
+        setWatchCompanies(data.companies);
+      }
     } catch { /* non-fatal */ }
   }
 
@@ -1323,7 +1341,17 @@ function JobsWidgets({ jobs: localJobs, refresh }: { jobs: JobPosting[]; refresh
       {/* Companies to Watch */}
       <Card title="Companies to Watch" icon="🏢">
         <div className="space-y-1.5 max-h-48 overflow-auto">
-          {watchCompanies.length === 0 && <div className="text-[10px] text-zinc-500">No companies yet. Add from job details.</div>}
+          {watchCompanies.length === 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] text-zinc-500">No companies loaded yet.</div>
+              <button
+                onClick={handleLoadSeededWatchlist}
+                className="text-[10px] px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition"
+              >
+                Load cyber watchlist
+              </button>
+            </div>
+          )}
           {watchCompanies.map((c, i) => (
             <div key={c.company_name || i} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2" onClick={() => setStatusFilter("all")}>
               {c.tier && <Badge color={c.tier === "big" ? "cyan" : "amber"}>{c.tier}</Badge>}
@@ -1723,7 +1751,13 @@ function SportsWidgets(_props: { refresh: () => void }) {
     published_at?: string; league: string; team_id?: string;
     rumor_flag?: number; summary?: string;
   }
-  interface SourceHealth { ok: boolean; items: number; error?: string }
+  interface SourceHealthItem {
+    name: string;
+    status: "ok" | "error";
+    latencyMs?: number;
+    items?: number;
+    error?: string;
+  }
 
   const [games, setGames] = useState<Game[]>([]);
   const [watchlist, setWatchlist] = useState<WlTeam[]>([]);
@@ -1732,7 +1766,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [addTeam, setAddTeam] = useState("");
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
-  const [sourceHealth, setSourceHealth] = useState<Record<string, SourceHealth>>({});
+  const [sourceHealth, setSourceHealth] = useState<SourceHealthItem[]>([]);
 
   // Line Movement state
   interface Movement { game_id: string; home_team: string; away_team: string; book: string; market: string; old_line: number; new_line: number; delta: number; direction: string; minutes_ago: number }
@@ -1845,7 +1879,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
   async function handleRefresh() {
     setRefreshing(true); setStatusMsg(null);
     try {
-      const d = await apiPost<{ ok: boolean; games?: number; odds?: number; news?: number; predictions?: number; error?: string; source?: string; sourceHealth?: Record<string, SourceHealth> }>("/sports/refresh", { league });
+      const d = await apiPost<{ ok: boolean; games?: number; odds?: number; news?: number; predictions?: number; error?: string; source?: string; sourceHealth?: SourceHealthItem[] }>("/sports/refresh", { league });
       if (d.sourceHealth) setSourceHealth(d.sourceHealth);
       const parts: string[] = [];
       if (d.games) parts.push(`${d.games} games`);
@@ -1887,10 +1921,14 @@ function SportsWidgets(_props: { refresh: () => void }) {
     .slice(0, 8);
 
   // Source health badges
-  const espnOk = sourceHealth.espn?.ok !== false;
-  const oddsOk = sourceHealth["the-odds-api"]?.ok !== false;
-  const newsOk = sourceHealth.rss?.ok !== false;
-  const oddsUnavailable = sourceHealth["the-odds-api"]?.ok === false;
+  const getHealth = (matcher: (name: string) => boolean) => sourceHealth.find((s) => matcher(s.name));
+  const espnHealth = getHealth((n) => n.includes("espn"));
+  const oddsHealth = getHealth((n) => n.includes("odds") || n.includes("api-sports"));
+  const newsHealth = getHealth((n) => n.includes("rss") || n.includes("news"));
+  const espnOk = espnHealth ? espnHealth.status === "ok" : true;
+  const oddsOk = oddsHealth ? oddsHealth.status === "ok" : true;
+  const newsOk = newsHealth ? newsHealth.status === "ok" : true;
+  const oddsUnavailable = oddsHealth ? oddsHealth.status !== "ok" : false;
 
   return (
     <div className="space-y-3">
@@ -1921,7 +1959,7 @@ function SportsWidgets(_props: { refresh: () => void }) {
       </div>
 
       {/* Source health indicators */}
-      {Object.keys(sourceHealth).length > 0 && (
+      {sourceHealth.length > 0 && (
         <div className="flex gap-2 flex-wrap">
           <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full", espnOk ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
             ESPN {espnOk ? "✓" : "✗"}
@@ -1932,6 +1970,9 @@ function SportsWidgets(_props: { refresh: () => void }) {
           <span className={cx("text-[9px] px-1.5 py-0.5 rounded-full", newsOk ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400")}>
             News {newsOk ? "✓" : "✗"}
           </span>
+          {oddsHealth?.error && (
+            <span className="text-[9px] text-amber-400">({oddsHealth.error})</span>
+          )}
         </div>
       )}
 
@@ -2322,6 +2363,12 @@ function StocksWidgets(_props: { refresh: () => void }) {
   interface FreshnessInfo { asof: string; ageSeconds: number; stale: boolean; source: string }
   interface OutlierItem { id: string; ticker: string; outlier_type: string; z_score: number; details_json: string; asof: string }
   interface PredictionItem { id: string; ticker: string; prediction_text: string; confidence: number; horizon: string; status: string; due_at: string; score_hit?: number | null; score_brier?: number | null; created_at: string }
+  interface StockProviderDebug {
+    env?: { STOCK_INTEL_API_BASE?: string };
+    yahooTestFetch?: string;
+    stockIntelTestFetch?: string;
+    lastRefreshHealth?: { status?: string; error?: string; last_run_at?: string } | null;
+  }
 
   const [watchlist, setWatchlist] = useState<WlItem[]>([]);
   const [quotes, setQuotes] = useState<QuoteItem[]>([]);
@@ -2337,6 +2384,7 @@ function StocksWidgets(_props: { refresh: () => void }) {
   const [refreshing, setRefreshing] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [providerDebug, setProviderDebug] = useState<StockProviderDebug | null>(null);
 
   // FIX 4: new state for auto-refresh + ticker detail
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
@@ -2361,6 +2409,7 @@ function StocksWidgets(_props: { refresh: () => void }) {
       setMetrics(d.metrics || {});
     } catch { /* */ }
     try { const d = await apiGet<{ regime: { risk_mode?: string; asof?: string } | null }>("/stocks/regime"); setRegime(d.regime); } catch { /* */ }
+    try { const d = await apiGet<StockProviderDebug>("/stocks/debug/provider"); setProviderDebug(d); } catch { /* */ }
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -2486,6 +2535,29 @@ function StocksWidgets(_props: { refresh: () => void }) {
         </div>
       </div>
       {statusMsg && <div className="text-[10px] text-zinc-400 px-1">{statusMsg}</div>}
+
+      {providerDebug && (
+        <Card title="Source Health" icon="🩺">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-xs">
+              <span className="text-zinc-300">Yahoo</span>
+              <span className={cx((providerDebug.yahooTestFetch || "").includes("HTTP 2") ? "text-emerald-400" : "text-amber-400")}>
+                {providerDebug.yahooTestFetch || "unknown"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-xs">
+              <span className="text-zinc-300">Stock Intel</span>
+              <span className={cx((providerDebug.stockIntelTestFetch || "").includes("HTTP 2") ? "text-emerald-400" : "text-zinc-500")}>
+                {providerDebug.stockIntelTestFetch || "not configured"}
+              </span>
+            </div>
+            <div className="text-[10px] text-zinc-500">
+              Last refresh: {providerDebug.lastRefreshHealth?.status || "unknown"}
+              {providerDebug.lastRefreshHealth?.error ? ` · ${providerDebug.lastRefreshHealth.error}` : ""}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Market overview */}
       <div className="grid grid-cols-3 gap-2">
