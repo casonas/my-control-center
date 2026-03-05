@@ -8,17 +8,18 @@
 import type { D1Database } from "./d1";
 import { parseFeed, inferTags, DEFAULT_SOURCES } from "./rss";
 import { upsertCronRun } from "./cronLog";
+import { runSportsRefresh as runSportsRefreshPipeline } from "./sports/pipeline";
 
 // ─── Schedule definitions (matches 5 worker cron triggers) ───
 export const CRON_SCHEDULES: Record<string, { cron: string; description: string }> = {
   research_scan:          { cron: "0 * * * *",           description: "Hourly RSS research scan" },
-  jobs_refresh:           { cron: "0 9,13,18 * * 1-5",   description: "Weekday job feed refresh (9am/1pm/6pm)" },
-  stocks_refresh:         { cron: "*/10 * * * *",         description: "Stock quotes + indices every 10 min" },
-  stocks_news_scan:       { cron: "0 * * * *",            description: "Stock news RSS scan hourly" },
+  jobs_refresh:           { cron: "*/30 * * * *",         description: "Job feed refresh every 30 min" },
+  stocks_refresh:         { cron: "*/30 * * * *",         description: "Stock quotes + indices every 30 min" },
+  stocks_news_scan:       { cron: "*/30 * * * *",         description: "Stock news scan every 30 min" },
   predictions_resolve:    { cron: "0 * * * *",            description: "Hourly prediction resolution" },
   premarket_outliers:     { cron: "0 13 * * 1-5",         description: "Weekday pre-market outlier scan (8am ET)" },
-  sports_refresh_nba:     { cron: "*/10 * * * *",         description: "NBA scores every 10 min" },
-  sports_refresh_nfl:     { cron: "*/10 * * * *",         description: "NFL scores every 10 min" },
+  sports_refresh_nba:     { cron: "*/30 * * * *",         description: "NBA scores every 30 min" },
+  sports_refresh_nfl:     { cron: "*/30 * * * *",         description: "NFL scores every 30 min" },
   skills_radar_scan:      { cron: "0 6 * * *",            description: "Daily skills radar at 6am" },
   lesson_plan_refresh:    { cron: "0 6 * * *",            description: "Daily lesson plan refresh at 6am" },
   industry_radar_refresh: { cron: "0 */3 * * *",          description: "Industry radar refresh every 3 hours" },
@@ -292,9 +293,15 @@ export async function runSportsRefresh(db: D1Database, userId: string, league = 
   const jobKey = `sports_refresh_${league}_${userId}`;
 
   try {
-    // MVP: Sports data provider placeholder — update cron_runs to track refresh attempts
-    await updateCronRun(db, jobKey, { status: "ok", itemsProcessed: 0, tookMs: Date.now() - start });
-    return { ok: true, league, games: 0, tookMs: Date.now() - start, source: "pending" };
+    const result = await runSportsRefreshPipeline(db, userId, league as "nba" | "nfl" | "mlb" | "nhl");
+    const itemsProcessed = result.games + result.odds + result.news + result.predictions;
+    await updateCronRun(db, jobKey, {
+      status: result.status === "ok" || result.status === "partial" ? result.status : "error",
+      itemsProcessed,
+      tookMs: Date.now() - start,
+      error: result.errors.length > 0 ? result.errors.join("; ") : null,
+    });
+    return { ok: true, league, ...result, tookMs: Date.now() - start };
   } catch (err) {
     const tookMs = Date.now() - start;
     const errMsg = err instanceof Error ? err.message : String(err);

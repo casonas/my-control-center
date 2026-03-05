@@ -1079,6 +1079,29 @@ export interface NewsScanResult {
   staleFallbackUsed: boolean;
 }
 
+function getEnvInt(name: string, fallback: number): number {
+  const n = Number(process.env[name] ?? fallback);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+async function pruneOldStockNews(db: D1Database, userId: string): Promise<void> {
+  const keepRows = getEnvInt("STOCK_NEWS_MAX_ROWS_PER_USER", 1200);
+  try {
+    await db.prepare(
+      `DELETE FROM stock_news_items
+       WHERE user_id = ?
+         AND id NOT IN (
+           SELECT id FROM stock_news_items
+           WHERE user_id = ?
+           ORDER BY fetched_at DESC
+           LIMIT ?
+         )`,
+    ).bind(userId, userId, keepRows).run();
+  } catch {
+    // non-fatal cleanup
+  }
+}
+
 export async function scanNewsFeeds(
   db: D1Database,
   userId: string,
@@ -1097,10 +1120,11 @@ export async function scanNewsFeeds(
   } catch { /* non-fatal */ }
 
   // 1) Stock Intel per-ticker news
-  if (intelProvider) {
+  if (intelProvider?.available) {
     const start = Date.now();
     try {
-      for (const ticker of [...watchlistSet].slice(0, 20)) {
+      const tickerCap = getEnvInt("STOCK_NEWS_TICKER_CAP", 8);
+      for (const ticker of [...watchlistSet].slice(0, tickerCap)) {
         try {
           const { items, health } = await intelProvider.getTickerNews(ticker);
           if (health.status !== "ok") continue;
@@ -1139,12 +1163,15 @@ export async function scanNewsFeeds(
   }
 
   // 2) RSS feeds (always — broad market coverage)
+  const perFeedCap = getEnvInt("STOCK_NEWS_FEED_ITEM_CAP", 25);
   for (const feed of STOCK_NEWS_FEEDS) {
     const start = Date.now();
     try {
       const res = await fetchWithRetry(feed.url);
       const xml = await res.text();
+      let processed = 0;
       for (const item of parseFeed(xml)) {
+        if (processed >= perFeedCap) break;
         if (!item.url || !item.title) continue;
         const title = sanitizeText(item.title).slice(0, 300);
         const summary = item.summary ? sanitizeText(item.summary).slice(0, 400) : null;
@@ -1156,6 +1183,7 @@ export async function scanNewsFeeds(
         const extracted = extractTickersFromText(`${title} ${summary || ""}`, watchlistSet);
         const ticker = extracted.length > 0 ? extracted[0] : null;
         const rel = scoreNewsRelevance(title, summary, ticker, watchlistSet, catalyst, feed.name, item.publishedAt);
+        if (rel.impactScore < 1) continue;
         try {
           const insertResult = await db.prepare(
             `INSERT OR IGNORE INTO stock_news_items
@@ -1166,7 +1194,10 @@ export async function scanNewsFeeds(
             item.publishedAt, now, summary, rel.impactScore, dedupeKey, sentiment, catalyst,
           ).run();
           const changes = Number((insertResult.meta as { changes?: unknown } | undefined)?.changes ?? 0);
-          if (changes > 0) newItems++;
+          if (changes > 0) {
+            newItems++;
+            processed++;
+          }
         } catch { /* dedupe */ }
       }
       sources.push({ name: feed.name, status: "ok", latencyMs: Date.now() - start });
@@ -1175,6 +1206,7 @@ export async function scanNewsFeeds(
     }
   }
 
+  await pruneOldStockNews(db, userId);
   return { newItems, sources, staleFallbackUsed: sources.every((s) => s.status !== "ok") };
 }
 

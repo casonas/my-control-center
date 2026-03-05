@@ -5,7 +5,7 @@ import { apiError, apiJson } from "@/lib/apiJson";
 import { runSportsRefresh } from "@/lib/sports/pipeline";
 import type { League } from "@/lib/sports/types";
 
-const COOLDOWN_MS = 60 * 1000;
+const COOLDOWN_MS = 30 * 60 * 1000;
 const VALID_LEAGUES = new Set(["nba", "nfl", "mlb", "nhl"]);
 
 export async function POST(req: Request) {

@@ -8,7 +8,7 @@ import { parseFeed } from "@/lib/rss";
 import { scoreJob, detectRemoteFlag } from "@/lib/jobScoring";
 import { DEFAULT_JOB_SOURCES, buildDedupeKey, fetchWithRetry } from "@/lib/jobSources";
 
-const REFRESH_COOLDOWN_MS = 2 * 60 * 1000;
+const REFRESH_COOLDOWN_MS = 30 * 60 * 1000;
 
 export async function POST(req: Request) {
   return withMutatingOrInternalAuth(req, async ({ session }) => {

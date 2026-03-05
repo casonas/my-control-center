@@ -51,8 +51,13 @@ export async function POST(req: Request) {
         }),
       );
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: message }, { status: 502 });
+    return Response.json(
+      buildFallbackTemplate("cold_email", {
+        jobTitle: "the role",
+        company: "your company",
+        yourName: "Your Name",
+      }),
+    );
   }
 }
 

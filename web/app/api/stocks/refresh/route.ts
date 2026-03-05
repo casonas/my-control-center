@@ -10,7 +10,7 @@ import {
 import type { SourceHealth, Freshness } from "@/lib/stockProviders";
 import { detectOutliers } from "@/lib/outlierEngine";
 
-const COOLDOWN_MS = 60_000;
+const COOLDOWN_MS = 30 * 60 * 1000;
 const RISK_OFF_THRESHOLD = -1;
 const RISK_ON_THRESHOLD = 1;
 

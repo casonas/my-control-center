@@ -281,6 +281,60 @@ function parseApiSportsResponse(data: any, league: League, gameIdMap: Map<string
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function parseEspnScoreboardOdds(data: any, league: League, gameIdMap: Map<string, string>): NormalizedOdds[] {
+  const rows: NormalizedOdds[] = [];
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const now = new Date().toISOString();
+
+  for (const ev of events) {
+    const comp = ev?.competitions?.[0];
+    if (!comp) continue;
+    const home = (comp?.competitors || []).find((c: any) => c?.homeAway === "home");
+    const away = (comp?.competitors || []).find((c: any) => c?.homeAway === "away");
+    const homeName = String(home?.team?.displayName || home?.team?.shortDisplayName || "");
+    const awayName = String(away?.team?.displayName || away?.team?.shortDisplayName || "");
+    const when = String(ev?.date || comp?.date || "");
+    const gameId = gameIdMap.get(matchKey(homeName, awayName, when)) || `espn_${league}_${String(ev?.id || crypto.randomUUID())}`;
+
+    const oddsObj = Array.isArray(comp?.odds) ? comp.odds[0] : null;
+    if (!oddsObj || typeof oddsObj !== "object") continue;
+
+    const spread = Number((oddsObj as Record<string, unknown>).spread ?? NaN);
+    const overUnder = Number((oddsObj as Record<string, unknown>).overUnder ?? NaN);
+    const homeMl = asAmerican((oddsObj as Record<string, unknown>).homeMoneyLine ?? (oddsObj as Record<string, unknown>).moneylineHome);
+    const awayMl = asAmerican((oddsObj as Record<string, unknown>).awayMoneyLine ?? (oddsObj as Record<string, unknown>).moneylineAway);
+
+    if (!Number.isFinite(spread) && !Number.isFinite(overUnder) && homeMl == null && awayMl == null) continue;
+    rows.push({
+      game_id: gameId,
+      book: "espn-consensus",
+      spread_home: Number.isFinite(spread) ? spread : null,
+      spread_away: Number.isFinite(spread) ? -spread : null,
+      total: Number.isFinite(overUnder) ? overUnder : null,
+      moneyline_home: homeMl,
+      moneyline_away: awayMl,
+      asof: now,
+    });
+  }
+
+  return rows;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+async function fetchEspnOddsFallback(league: League, gameIdMap: Map<string, string>): Promise<NormalizedOdds[]> {
+  const path = ESPN_SCOREBOARD_MAP[league];
+  if (!path) return [];
+  const text = await fetchWithRetry(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`);
+  if (!text) return [];
+  try {
+    const json = JSON.parse(text);
+    return parseEspnScoreboardOdds(json, league, gameIdMap);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Fetch odds from the Odds API.
  * Supports key pools with THE_ODDS_API_KEYS=key1,key2,key3.
@@ -329,6 +383,10 @@ export async function fetchOdds(league: League): Promise<ProviderResult<Normaliz
   const apiSportsKey = (process.env.API_SPORTS_API_KEY || "").trim();
   const apiSportsUrl = (process.env[APISPORTS_ODDS_URL_ENV[league]] || "").trim();
   if (!apiSportsKey || !apiSportsUrl) {
+    const espnOdds = await fetchEspnOddsFallback(league, gameIdMap);
+    if (espnOdds.length > 0) {
+      return { ok: true, data: espnOdds, source: "espn-odds-fallback" };
+    }
     return {
       ok: false,
       data: [],
@@ -352,10 +410,14 @@ export async function fetchOdds(league: League): Promise<ProviderResult<Normaliz
     const json = await res.json();
     const odds = parseApiSportsResponse(json, league, gameIdMap);
     if (odds.length === 0) {
+      const espnOdds = await fetchEspnOddsFallback(league, gameIdMap);
+      if (espnOdds.length > 0) return { ok: true, data: espnOdds, source: "espn-odds-fallback" };
       return { ok: false, data: [], source: "api-sports", error: `${lastError}; api-sports returned no odds rows` };
     }
     return { ok: true, data: odds, source: "api-sports" };
   } catch (err) {
+    const espnOdds = await fetchEspnOddsFallback(league, gameIdMap);
+    if (espnOdds.length > 0) return { ok: true, data: espnOdds, source: "espn-odds-fallback" };
     return {
       ok: false,
       data: [],

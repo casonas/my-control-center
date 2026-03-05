@@ -1,6 +1,7 @@
 export const runtime = "edge";
 import { withReadAuth } from "@/lib/readAuth";
 import { getD1 } from "@/lib/d1";
+import { normalizeOddsRow } from "@/lib/sports/serialize";
 
 export async function GET(req: Request) {
   return withReadAuth(async ({ userId }) => {
@@ -28,7 +29,8 @@ export async function GET(req: Request) {
            ORDER BY o.asof DESC LIMIT 50`
         ).bind(userId, league).all();
       }
-      return Response.json({ odds: r.results || [] });
+      const odds = ((r.results || []) as Record<string, unknown>[]).map(normalizeOddsRow);
+      return Response.json({ odds });
     } catch { return Response.json({ odds: [] }); }
   });
 }

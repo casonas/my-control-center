@@ -9,6 +9,7 @@
 export interface Env {
   DB: D1Database;
   CRON_SECRET: string;
+  MCC_API_BASE_URL?: string;
 }
 
 // ─── Cron schedule → fan-out sub-job mapping (5 triggers only) ──
@@ -24,8 +25,9 @@ interface SubJob {
 }
 
 const FANOUT_MAP: Record<string, SubJob[]> = {
-  // Every 10 min — high-frequency data refreshes
-  "*/10 * * * *": [
+  // Every 30 min - core refreshes
+  "*/30 * * * *": [
+    { name: "jobs_refresh" },
     { name: "stocks_refresh" },
     { name: "sports_refresh_nba" },
     { name: "sports_refresh_nfl" },
@@ -49,10 +51,6 @@ const FANOUT_MAP: Record<string, SubJob[]> = {
     { name: "skills_radar_scan" },
     { name: "memory_summarize" },
     { name: "daily_briefing_generate" },
-  ],
-  // Weekday 9am/1pm/6pm
-  "0 9,13,18 * * 1-5": [
-    { name: "jobs_refresh" },
   ],
   // Weekday pre-market (13:00 UTC = 8am ET)
   "0 13 * * 1-5": [
@@ -835,7 +833,48 @@ async function runPremarketOutliers(db: D1Database, userId: string): Promise<Job
 // ─── Job dispatcher with retry ───────────────────────
 type JobResult = { items: number; failed: number };
 
-async function runJob(db: D1Database, userId: string, jobName: string): Promise<JobResult> {
+async function runApiRefresh(
+  env: Env,
+  userId: string,
+  path: string,
+  body: Record<string, unknown> = {},
+): Promise<JobResult | null> {
+  const base = env.MCC_API_BASE_URL?.trim();
+  if (!base) return null;
+
+  const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+  const url = `${normalizedBase}${path}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Token": env.CRON_SECRET,
+        "X-Internal-User-Id": userId,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${res.status} ${res.statusText}${text ? ` - ${text.slice(0, 200)}` : ""}`);
+    }
+    const data = await res.json() as { itemsProcessed?: number; games?: number; odds?: number; news?: number; predictions?: number; errors?: string[] };
+    const combined =
+      Number(data.itemsProcessed ?? 0) +
+      Number(data.games ?? 0) +
+      Number(data.odds ?? 0) +
+      Number(data.news ?? 0) +
+      Number(data.predictions ?? 0);
+    return { items: combined, failed: (Array.isArray(data.errors) && data.errors.length > 0) ? 1 : 0 };
+  } catch (err) {
+    console.warn(`[cron] API refresh failed for ${path}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+async function runJob(db: D1Database, env: Env, userId: string, jobName: string): Promise<JobResult> {
   switch (jobName) {
     case "research_scan": return runResearchScan(db, userId);
     case "research_trends_update": return runResearchTrendsUpdate(db, userId);
@@ -849,17 +888,32 @@ async function runJob(db: D1Database, userId: string, jobName: string): Promise<
     case "predictions_resolve": return runPredictionsResolve(db, userId);
     case "premarket_outliers": return runPremarketOutliers(db, userId);
     case "stocks_refresh": {
+      const apiResult = await runApiRefresh(env, userId, "/api/stocks/refresh");
+      if (apiResult) return apiResult;
+      // Fallback if API base URL is not configured: minimal heartbeat behavior.
       const wl = await db.prepare(`SELECT ticker FROM stock_watchlist WHERE user_id = ?`).bind(userId).all();
       return { items: (wl.results || []).length, failed: 0 };
     }
-    case "sports_refresh_nba":
+    case "sports_refresh_nba": {
+      const apiResult = await runApiRefresh(env, userId, "/api/sports/refresh", { league: "nba" });
+      if (apiResult) return apiResult;
       return runSportsRefreshJob(db, userId, "nba");
-    case "sports_refresh_nfl":
+    }
+    case "sports_refresh_nfl": {
+      const apiResult = await runApiRefresh(env, userId, "/api/sports/refresh", { league: "nfl" });
+      if (apiResult) return apiResult;
       return runSportsRefreshJob(db, userId, "nfl");
-    case "sports_refresh_mlb":
+    }
+    case "sports_refresh_mlb": {
+      const apiResult = await runApiRefresh(env, userId, "/api/sports/refresh", { league: "mlb" });
+      if (apiResult) return apiResult;
       return runSportsRefreshJob(db, userId, "mlb");
-    case "sports_refresh_nhl":
+    }
+    case "sports_refresh_nhl": {
+      const apiResult = await runApiRefresh(env, userId, "/api/sports/refresh", { league: "nhl" });
+      if (apiResult) return apiResult;
       return runSportsRefreshJob(db, userId, "nhl");
+    }
     default:
       return { items: 0, failed: 0 };
   }
@@ -871,13 +925,13 @@ const MAX_RETRIES = 1;
  * Run a single sub-job with timeout + single retry.
  * Returns result or throws on permanent failure.
  */
-async function runSubJobWithRetry(db: D1Database, userId: string, jobName: string, timeoutMs: number): Promise<JobResult> {
+async function runSubJobWithRetry(db: D1Database, env: Env, userId: string, jobName: string, timeoutMs: number): Promise<JobResult> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       // Race the job against a hard timeout
       const result = await Promise.race([
-        runJob(db, userId, jobName),
+        runJob(db, env, userId, jobName),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs)
         ),
@@ -938,7 +992,7 @@ export default {
         }
 
         try {
-          const result = await runSubJobWithRetry(db, userId, jobName, timeout);
+          const result = await runSubJobWithRetry(db, env, userId, jobName, timeout);
           const tookMs = Date.now() - start;
           const totalSources = result.items + result.failed;
           const status = result.failed === 0 ? "ok" : (totalSources > 0 && result.failed < totalSources) ? "partial" : "error";
@@ -1001,3 +1055,4 @@ interface D1Result {
   success: boolean;
   meta?: Record<string, unknown>;
 }
+

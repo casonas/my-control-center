@@ -1913,6 +1913,32 @@ function SportsWidgets(_props: { refresh: () => void }) {
   const activeGame = games.find((g) => g.id === activeGameId);
   const activePred = predictions.find((p) => p.game_id === activeGameId);
   const activeOdds = odds.filter((o) => o.game_id === activeGameId);
+  const teamAbbr = (name: string) =>
+    name.split(" ").map((p) => p[0]).join("").slice(0, 3).toUpperCase();
+  const cleanHeadline = (title: string) =>
+    title
+      .replace(/\s*\|\s*[^|]+$/, "")
+      .replace(/\s*-\s*(ESPN|CBS Sports|Yahoo Sports|Bleacher Report)$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const headlineRank = (item: NewsItem) => {
+    const text = `${item.title} ${item.summary || ""}`.toLowerCase();
+    let score = 0;
+    if (/(injury|out for|questionable|active|inactive|suspended)/i.test(text)) score += 4;
+    if (/(trade|waiver|signed|contract|lineup|starting)/i.test(text)) score += 3;
+    if (/(odds|spread|total|moneyline|bet|pick)/i.test(text)) score += 2;
+    if (item.rumor_flag === 1) score -= 2;
+    if (item.published_at) {
+      const ageMs = Date.now() - new Date(item.published_at).getTime();
+      if (ageMs < 6 * 60 * 60 * 1000) score += 2;
+      else if (ageMs < 24 * 60 * 60 * 1000) score += 1;
+    }
+    return score;
+  };
+  const curatedNews = [...news]
+    .map((n) => ({ ...n, title: cleanHeadline(n.title) }))
+    .sort((a, b) => headlineRank(b) - headlineRank(a))
+    .slice(0, 15);
 
   // Top edges: predictions with meaningful edge, sorted by |edge_spread| desc
   const topEdges = predictions
@@ -1987,18 +2013,30 @@ function SportsWidgets(_props: { refresh: () => void }) {
                 className={cx("w-full text-left rounded-xl p-3 transition",
                   activeGameId === g.id ? "bg-white/10 ring-1 ring-rose-500/30" : "bg-white/5 hover:bg-white/10"
                 )}>
-                <div className="flex items-center justify-between">
-                  <div className="text-xs">
-                    <div className={cx("font-semibold", (g.home_score || 0) > (g.away_score || 0) ? "text-white" : "text-zinc-400")}>
-                      {g.home_team_name} <span className="font-bold">{g.home_score ?? "-"}</span>
+                <div className="rounded-lg border border-white/10 overflow-hidden bg-black/20">
+                  <div className="px-2 py-1 flex items-center justify-between border-b border-white/10 bg-white/5">
+                    <div className="text-[9px] uppercase tracking-wide text-zinc-400">
+                      {g.status === "live" ? "Live" : g.status === "final" ? "Final" : "Scheduled"}
+                      {g.period ? ` · ${g.period}` : ""}
+                      {g.clock ? ` ${g.clock}` : ""}
                     </div>
-                    <div className={cx("font-semibold mt-0.5", (g.away_score || 0) > (g.home_score || 0) ? "text-white" : "text-zinc-400")}>
-                      {g.away_team_name} <span className="font-bold">{g.away_score ?? "-"}</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
                     <Badge color={g.status === "final" ? "zinc" : g.status === "live" ? "emerald" : "amber"}>{g.status}</Badge>
-                    {g.period && <div className="text-[9px] text-zinc-500 mt-0.5">{g.period} {g.clock || ""}</div>}
+                  </div>
+                  <div className="px-2 py-1.5 space-y-1">
+                    <div className="grid grid-cols-[1fr_auto] items-center">
+                      <div className={cx("text-xs font-semibold truncate", (g.home_score || 0) >= (g.away_score || 0) ? "text-white" : "text-zinc-400")}>
+                        <span className="inline-block w-7 text-[10px] text-zinc-500">{teamAbbr(g.home_team_name)}</span>
+                        {g.home_team_name}
+                      </div>
+                      <div className="text-sm font-bold tabular-nums text-white">{g.home_score ?? "-"}</div>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center">
+                      <div className={cx("text-xs font-semibold truncate", (g.away_score || 0) >= (g.home_score || 0) ? "text-white" : "text-zinc-400")}>
+                        <span className="inline-block w-7 text-[10px] text-zinc-500">{teamAbbr(g.away_team_name)}</span>
+                        {g.away_team_name}
+                      </div>
+                      <div className="text-sm font-bold tabular-nums text-white">{g.away_score ?? "-"}</div>
+                    </div>
                   </div>
                 </div>
               </button>
@@ -2159,16 +2197,17 @@ function SportsWidgets(_props: { refresh: () => void }) {
       </Card>
 
       {/* News + Rumors */}
-      <Card title="News & Rumors" icon="📰">
-        {news.length > 0 ? (
+      <Card title="Relevant Headlines" icon="📰">
+        {curatedNews.length > 0 ? (
           <div className="space-y-1.5 max-h-48 overflow-auto">
-            {news.slice(0, 15).map((n) => (
+            {curatedNews.map((n) => (
               <a key={n.id} href={n.url} target="_blank" rel="noopener noreferrer"
                 className="block rounded-xl bg-white/5 px-3 py-2 hover:bg-white/10 transition">
                 <div className="flex items-start gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="text-[11px] text-white font-medium leading-tight truncate">{n.title}</div>
+                    <div className="text-[11px] text-white font-semibold leading-tight">{n.title}</div>
                     <div className="text-[9px] text-zinc-500 mt-0.5">{n.source} {n.published_at ? `· ${new Date(n.published_at).toLocaleDateString()}` : ""}</div>
+                    {n.summary && <div className="text-[9px] text-zinc-400 mt-0.5 line-clamp-2">{n.summary}</div>}
                   </div>
                   {n.rumor_flag === 1 && (
                     <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400">rumor</span>

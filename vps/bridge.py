@@ -42,6 +42,25 @@ AGENTS = {
 active_sessions: dict[str, str] = {}
 
 
+def _session_key(agent_id: str, requested: str | None) -> str:
+    """Session map key. Explicit session IDs remain isolated."""
+    if requested and requested.strip():
+        return f"{agent_id}:{requested.strip()}"
+    return agent_id
+
+
+def _sanitize_stream_line(line: str) -> str:
+    """Drop CLI noise lines that leak into user chat output."""
+    s = line.strip()
+    if not s:
+        return ""
+    if s in {"--quiet", "--local"}:
+        return ""
+    if s.startswith("Usage:") and "openclaw" in s.lower():
+        return ""
+    return line
+
+
 class InteractiveBridge(BaseHTTPRequestHandler):
     """HTTP handler for the MCC bridge."""
 
@@ -68,10 +87,12 @@ class InteractiveBridge(BaseHTTPRequestHandler):
         # ── 1. AGENT CONNECTION (with persistence) ───────
         if self.path == "/agents/connect":
             agent_id = body.get("agentId", "main")
+            requested = body.get("sessionId")
+            key = _session_key(agent_id, requested)
             session_id = active_sessions.get(
-                agent_id, f"ses_{agent_id}_{int(time.time())}"
+                key, requested or f"ses_{agent_id}_{int(time.time())}"
             )
-            active_sessions[agent_id] = session_id
+            active_sessions[key] = session_id
             self._json({"sessionId": session_id, "status": "connected"})
 
         # ── 2. STREAMING CHAT ────────────────────────────
@@ -103,6 +124,11 @@ class InteractiveBridge(BaseHTTPRequestHandler):
             self.headers.get("X-Agent-Id")
             or body.get("agentId", "main")
         )
+        requested_session = (
+            self.headers.get("X-Agent-Session")
+            or body.get("sessionId")
+            or body.get("conversationId")
+        )
         message = body.get("message", "")
 
         # Validate agent_id before sending any headers
@@ -113,10 +139,11 @@ class InteractiveBridge(BaseHTTPRequestHandler):
         agent_dir = AGENTS.get(agent_id, AGENTS["main"])["dir"]
 
         # Persistent session management
+        key = _session_key(agent_id, requested_session)
         session_id = active_sessions.get(
-            agent_id, f"ses_{agent_id}_{int(time.time())}"
+            key, requested_session or f"ses_{agent_id}_{int(time.time())}"
         )
-        active_sessions[agent_id] = session_id
+        active_sessions[key] = session_id
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -134,7 +161,6 @@ class InteractiveBridge(BaseHTTPRequestHandler):
             "--agent", agent_id,
             "--session-id", session_id,
             "--local",
-            "--quiet",
             "--message", message,
         ]
 
@@ -149,12 +175,13 @@ class InteractiveBridge(BaseHTTPRequestHandler):
             )
 
             for line in process.stdout:
-                if line.strip():
+                cleaned = _sanitize_stream_line(line)
+                if cleaned.strip():
                     is_log = any(
-                        x in line
+                        x in cleaned
                         for x in ["[agent]", "Error", "diagnostic"]
                     )
-                    chunk = json.dumps({"text": line, "is_log": is_log})
+                    chunk = json.dumps({"text": cleaned, "is_log": is_log})
                     self.wfile.write(f"data: {chunk}\n\n".encode())
                     self.wfile.flush()
 

@@ -16,6 +16,32 @@ const LEAGUE_MAP: Record<League, string> = {
   nhl: "hockey/nhl",
 };
 
+function yyyymmdd(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}${m}${day}`;
+}
+
+function dedupeGames(rows: NormalizedGame[]): NormalizedGame[] {
+  const byId = new Map<string, NormalizedGame>();
+  for (const g of rows) byId.set(g.id, g);
+  return [...byId.values()];
+}
+
+async function fetchScoreboardJson(path: string, dateStr?: string): Promise<Record<string, unknown> | null> {
+  const url = dateStr
+    ? `${ESPN_BASE}/${path}/scoreboard?dates=${encodeURIComponent(dateStr)}`
+    : `${ESPN_BASE}/${path}/scoreboard`;
+  const text = await fetchWithRetry(url);
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function mapStatus(espnStatus: string): NormalizedGame["status"] {
   const s = (espnStatus || "").toLowerCase();
   if (s.includes("final")) return "final";
@@ -72,15 +98,26 @@ export async function fetchEspnScores(league: League): Promise<ProviderResult<No
   const path = LEAGUE_MAP[league];
   if (!path) return { ok: false, data: [], source: "espn", error: `Unknown league: ${league}` };
 
-  const url = `${ESPN_BASE}/${path}/scoreboard`;
-  const text = await fetchWithRetry(url);
-  if (!text) return { ok: false, data: [], source: "espn", error: "Fetch failed" };
-
   try {
-    const json = JSON.parse(text);
-    const games = parseScoreboard(json, league);
-    return { ok: true, data: games, source: "espn" };
+    const primary = await fetchScoreboardJson(path);
+    const primaryGames = primary ? parseScoreboard(primary, league) : [];
+    if (primaryGames.length > 0) {
+      return { ok: true, data: dedupeGames(primaryGames), source: "espn" };
+    }
+
+    // If no games returned for "today" endpoint, probe nearby dates.
+    const dayOffsets = [-1, 1, 2];
+    const now = new Date();
+    const windows: NormalizedGame[] = [];
+    for (const offset of dayOffsets) {
+      const d = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
+      const json = await fetchScoreboardJson(path, yyyymmdd(d));
+      if (!json) continue;
+      windows.push(...parseScoreboard(json, league));
+    }
+
+    return { ok: true, data: dedupeGames(windows), source: "espn" };
   } catch (err) {
-    return { ok: false, data: [], source: "espn", error: err instanceof Error ? err.message : "Parse error" };
+    return { ok: false, data: [], source: "espn", error: err instanceof Error ? err.message : "Fetch/parse error" };
   }
 }

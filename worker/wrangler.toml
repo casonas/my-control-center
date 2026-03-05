@@ -6,6 +6,7 @@
 # ─────────────────────────────────────────────────────
 
 name = "mcc-cron"
+account_id = "59a02b48365bacfcbfb54d515cc49dbe"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
@@ -22,11 +23,11 @@ database_id = "294c9dc6-880d-43a8-af35-5ec613ee08ba"
 # Adjust frequencies to stay within free-tier limits (100k req/day).
 [triggers]
 crons = [
-  "*/10 * * * *",        # Every 10 min: stocks_refresh, sports_refresh_{nba,nfl,mlb,nhl}
+  "*/30 * * * *",        # Every 30 min: stocks/jobs/sports refresh
   "0 * * * *",           # Hourly: research_scan, stocks_news_scan
   "0 */3 * * *",         # Every 3 hours: industry_radar_refresh
   "0 6 * * *",           # Daily 6am UTC: lesson_plan_refresh, skills_radar_scan, memory_summarize
-  "0 9,13,18 * * 1-5",   # Weekday 9am/1pm/6pm: jobs_refresh
+  "0 13 * * 1-5",        # Weekday 8am ET: premarket_outliers
 ]
 
 # ─── Environment Variables ───
@@ -34,3 +35,4 @@ crons = [
 # Do NOT put secrets in this file.
 [vars]
 WORKER_NAME = "mcc-cron"
+MCC_API_BASE_URL = "https://my-control-center.pages.dev"

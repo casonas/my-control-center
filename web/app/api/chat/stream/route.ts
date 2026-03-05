@@ -4,6 +4,12 @@ export const runtime = "edge";
 import { withMutatingAuth } from "@/lib/mutatingAuth";
 import { getD1 } from "@/lib/d1";
 
+const CHAT_MAX_INPUT_CHARS = 4000;
+const CHAT_MAX_HISTORY_MESSAGES = 12;
+const CHAT_MAX_HISTORY_ITEM_CHARS = 1200;
+const CHAT_DEFAULT_MAX_OUTPUT_TOKENS = 900;
+const CHAT_HARD_MAX_OUTPUT_TOKENS = 1500;
+
 /** Read an env var from process.env. */
 function getEnv(name: string): string | undefined {
   return process.env[name];

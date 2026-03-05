@@ -24,8 +24,8 @@ export interface JobCaps {
 
 export const DEFAULT_JOB_CAPS: Record<string, JobCaps> = {
   lessons:   { maxItems: 5,  maxLLMCalls: 5,  maxOutputTokens: 2000, model: "cheap" },
-  radar:     { maxItems: 20, maxLLMCalls: 10, maxOutputTokens: 1500, model: "cheap" },
-  chat:      { maxItems: 1,  maxLLMCalls: 1,  maxOutputTokens: 4000, model: "standard" },
+  radar:     { maxItems: 15, maxLLMCalls: 8,  maxOutputTokens: 1200, model: "cheap" },
+  chat:      { maxItems: 1,  maxLLMCalls: 1,  maxOutputTokens: 1200, model: "standard" },
   summarize: { maxItems: 10, maxLLMCalls: 10, maxOutputTokens: 1000, model: "cheap" },
 };
 
@@ -34,8 +34,8 @@ export const DEFAULT_JOB_CAPS: Record<string, JobCaps> = {
 // Budget values represent approximate LLM call counts per day.
 export const DAILY_BUDGET: Record<string, { maxCalls: number; maxTokensOut: number }> = {
   lessons:   { maxCalls: 20,  maxTokensOut: 40000 },
-  radar:     { maxCalls: 30,  maxTokensOut: 45000 },
-  chat:      { maxCalls: 50,  maxTokensOut: 200000 },
+  radar:     { maxCalls: 24,  maxTokensOut: 30000 },
+  chat:      { maxCalls: 50,  maxTokensOut: 120000 },
   summarize: { maxCalls: 15,  maxTokensOut: 15000 },
 };
 

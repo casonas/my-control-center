@@ -13,6 +13,7 @@
 | Variable | Description | Where to set |
 |---|---|---|
 | `CRON_SECRET` | Shared secret for cron auth | Cloudflare Dashboard → Workers → mcc-cron → Settings → Env vars |
+| `MCC_API_BASE_URL` | Base URL of your deployed Pages app for worker-triggered refresh APIs | Same (e.g. `https://my-control-center.com`) |
 
 ### VPS Bridge (optional)
 | Variable | Description | Where to set |

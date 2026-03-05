@@ -19,6 +19,7 @@
 # ─────────────────────────────────────────────────────
 
 name = "my-control-center"
+account_id = "59a02b48365bacfcbfb54d515cc49dbe"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
