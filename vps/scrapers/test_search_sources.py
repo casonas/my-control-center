@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""
+Quick source test for search engines used by jobs_scraper.py.
+
+Usage:
+  source .venv/bin/activate
+  export SEARXNG_BASE_URL="https://search.yourdomain.com"
+  export GOOGLE_PROXY_TEMPLATE="https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us"
+  python vps/scrapers/test_search_sources.py
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+
+from jobs_scraper import parse_google_proxy, parse_searxng, SURGICAL_QUERIES
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def main() -> None:
+    fetched_at = now_iso()
+    q = SURGICAL_QUERIES[0]
+
+    print("[test] query:", q)
+
+    searx = os.getenv("SEARXNG_BASE_URL", "").strip()
+    if searx:
+        try:
+            rows = parse_searxng(searx, q, fetched_at)
+            print(f"[test] searxng count={len(rows)} sample={(rows[0]['url'] if rows else 'none')}")
+        except Exception as e:
+            print(f"[test] searxng failed: {e}")
+    else:
+        print("[test] searxng skipped (SEARXNG_BASE_URL not set)")
+
+    proxy = os.getenv(
+        "GOOGLE_PROXY_TEMPLATE",
+        "https://r.jina.ai/http://www.google.com/search?q={q}&hl=en&gl=us",
+    ).strip()
+    try:
+        rows = parse_google_proxy(proxy, q, fetched_at)
+        print(f"[test] google-proxy count={len(rows)} sample={(rows[0]['url'] if rows else 'none')}")
+    except Exception as e:
+        print(f"[test] google-proxy failed: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
